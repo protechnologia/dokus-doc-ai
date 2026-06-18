@@ -58,6 +58,50 @@ Ustawienia **aplikacji** (`Settings`):
 | `LLM_API_VERSION` | — | Wersja API (tylko Azure OpenAI). |
 | `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
 
+## API
+
+Bazowy adres: `http://localhost:8000` (port z `FASTAPI_PORT`). Interaktywna dokumentacja
+(Swagger UI) pod `/docs`. Na razie dostępny jest tylko `/health` — endpointy ekstrakcji
+i streszczania dochodzą w kolejnych krokach (2.3–2.5).
+
+Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
+ten sam identyfikator trafia do logów, co ułatwia korelację.
+
+### `GET /health`
+
+Zdrowie usługi i — best-effort — dostępność Tiki. **Zawsze zwraca HTTP 200, gdy API
+żyje;** stan zależności jest w ciele odpowiedzi, nie w kodzie HTTP (niedostępna Tika to
+`status: degraded`, nie błąd). Pole `status`: `ok` (API i Tika zdrowe) albo `degraded`
+(API żyje, Tika niedostępna).
+
+Wywołanie:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Przykładowa odpowiedź — Tika zdrowa:
+
+```json
+{
+  "status": "ok",
+  "service": "dokus-doc-ai",
+  "version": "0.1.0",
+  "dependencies": { "tika": "ok" }
+}
+```
+
+Przykładowa odpowiedź — Tika niedostępna (kod HTTP nadal `200`):
+
+```json
+{
+  "status": "degraded",
+  "service": "dokus-doc-ai",
+  "version": "0.1.0",
+  "dependencies": { "tika": "unreachable" }
+}
+```
+
 ## Testy
 
 ### Szybki sprawdzian ręczny

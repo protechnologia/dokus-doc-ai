@@ -1,8 +1,8 @@
-"""Fixtures dla testow integracyjnych — uderzaja w dzialajaca usluge Tika.
+"""Fixtures dla testow integracyjnych — uderzaja w dzialajace uslugi (Tika, FastAPI).
 
-Tika musi byc uruchomiona (docker compose up -d tika). Jesli jest niedostepna,
-testy sa POMIJANE (skip), a nie wywalane — dzieki temu `pytest` na maszynie bez
-kontenera nie czerwieni sie bezsensownie.
+Usluga musi byc uruchomiona (docker compose up -d <usluga>). Jesli jest niedostepna,
+jej testy sa POMIJANE (skip), a nie wywalane — dzieki temu `pytest` na maszynie bez
+kontenerow nie czerwieni sie bezsensownie.
 """
 
 import os
