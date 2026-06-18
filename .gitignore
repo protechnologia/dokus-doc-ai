@@ -1,0 +1,14 @@
+# Sekrety / konfiguracja lokalna
+.env
+
+# Pliki testowe z prawdziwa trescia (moga zawierac dane wrazliwe)
+samples/*
+!samples/.gitkeep
+!samples/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

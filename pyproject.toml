@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Pakiet aplikacji `app` zyje w api/ (izolowany build context uslugi FastAPI).
+# Dodajemy api/ do sciezki, zeby testy mogly `import app`.
+pythonpath = ["api"]
+markers = [
+    "integration: wszystkie testy wymagajace uruchomionej uslugi (parasol nad ponizszymi)",
+    "integration_tika: testy integracyjne uderzajace w kontener Tika",
+    "integration_fastapi: testy integracyjne uderzajace w usluge FastAPI",
+]

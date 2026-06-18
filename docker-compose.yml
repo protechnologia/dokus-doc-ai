@@ -1,0 +1,46 @@
+# DOKUS Doc AI.
+# Krok 1: warstwa ekstrakcji/OCR (Tika). Krok 2: usluga FastAPI (API + logika).
+# LLM jako osobna usluga dochodzi w fazie 4-5.
+services:
+  tika:
+    build:
+      context: ./tika
+    image: dokus-doc-ai/tika:3.3.0.0-pol
+    container_name: dokus-tika
+    restart: unless-stopped
+    ports:
+      - "${TIKA_PORT:-9998}:9998"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9998/tika"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  fastapi:
+    build:
+      context: ./api
+    image: dokus-doc-ai/fastapi:0.1.0
+    container_name: dokus-fastapi
+    restart: unless-stopped
+    depends_on:
+      tika:
+        condition: service_healthy
+    environment:
+      # Tika widziana z sieci compose pod nazwa uslugi, nie przez localhost.
+      TIKA_URL: "http://tika:9998"
+      # Dostawca LLM (klient w 2.2). Domyslnie 'fake' — nic nie wychodzi na zewnatrz.
+      LLM_PROVIDER: "${LLM_PROVIDER:-fake}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+      LLM_API_VERSION: "${LLM_API_VERSION:-}"
+    ports:
+      - "${FASTAPI_PORT:-8000}:8000"
+    healthcheck:
+      # python jest w obrazie (slim) — unikamy doinstalowywania curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
