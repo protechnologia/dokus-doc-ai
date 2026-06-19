@@ -118,9 +118,10 @@ pipeline. Każdy endpoint dostaje testy (marker `integration_fastapi` + jednostk
    (Pydantic), `/health` (opcjonalnie sprawdza dostępność Tiki), `Dockerfile` + usługa
    `fastapi` w `docker-compose` (`depends_on: tika`), szkielet testów. Szczegóły:
    sekcja „Stan kroku 2.1" niżej.
-2. **`LLMClient`** — abstrakcyjny interfejs + pierwsza implementacja komercyjna
-   (Azure/OpenAI) + `FakeLLMClient` do testów i dev-u (pipeline bez prawdziwego API,
-   bez kosztów i bez wysyłania danych na zewnątrz — spójne z „prywatność pierwsza").
+2. **[ZROBIONE i ZWERYFIKOWANE] `LLMClient`** — abstrakcyjny interfejs + implementacja
+   OpenAI + `FakeLLMClient` do testów i dev-u (pipeline bez prawdziwego API, bez kosztów
+   i bez wysyłania danych na zewnątrz — spójne z „prywatność pierwsza"). Szczegóły:
+   sekcja „Stan kroku 2.2" niżej.
 3. **API: czysta ekstrakcja** — proxy do Tiki: upload pliku, walidacja typu/rozmiaru,
    obsługa błędów (Tika niedostępna, plik nieobsługiwany, pusty wynik OCR).
    **Uwaga (zmierzone 2026-06-18): „PDF tekstowy" ≠ „PDF czytelny".** Wykryty realny
@@ -175,6 +176,53 @@ in-process `TestClient` /health → 200 z `tika:ok` (Tika realna na localhost:99
 w nagłówku i w logach; `pytest -m integration_fastapi` → 3 PASSED. Powtórzenie:
 `docker compose up -d fastapi` + `pytest -m integration_fastapi`.
 
+### Stan kroku 2.2 — `LLMClient` (ZROBIONE i ZWERYFIKOWANE)
+
+Warstwa LLM jako **transport/generacja** (analogia do `TikaClient`): „wiadomości →
+tekst + zużycie". Świadomie NIE zna promptów summaryzacji ani truncacji — to krok 2.4.
+Pakiet `api/app/llm/`:
+
+- `llm/base.py` — abstrakcyjny `LLMClient` (jedna metoda `async complete(*, user, system,
+  max_tokens, temperature) -> LLMResult`), modele `LLMResult`/`LLMUsage` (Pydantic) oraz
+  hierarchia wyjątków domenowych `LLMError` → `LLMAuthError`/`LLMRateLimitError`/
+  `LLMTimeoutError`/`LLMResponseError` (logika mapuje je na HTTP dopiero w 2.4/2.5).
+- `llm/fake.py` — `FakeLLMClient`: deterministyczny, offline (prefiks `[FAKE-LLM]` +
+  pierwsze ~40 słów wejścia). Domyślny dostawca dev/test — nic nie wychodzi na zewnątrz.
+- `llm/openai_client.py` — `OpenAILLMClient` (jedyne miejsce importujące SDK `openai`;
+  import **leniwy** w metodach, więc sam import pakietu nie wymaga SDK). Obsługuje zwykłe
+  OpenAI (`api_key`+`model`, opcjonalny `base_url`). Mapuje wyjątki SDK → `LLMError`.
+  **Azure świadomie pominięty** — gdy będzie trzeba, osobny klient, bez ruszania tego.
+- `llm/factory.py` — `build_llm_client(settings)` + cache'owany `get_llm_client()`. Wybór
+  po `LLM_PROVIDER` (`fake`/`openai`); walidacja braku klucza/modelu → `LLMConfigError`
+  (czytelny błąd od razu, nie gołe 401 w runtime). Inny provider → `LLMConfigError`.
+- `llm/__init__.py` — publiczne API pakietu (`from app.llm import get_llm_client, ...`).
+- `api/requirements.txt` — dodane `openai>=1.40`. `.env.example` — sekcja LLM (fake/openai).
+- Testy: marker `integration_llm` (zarejestrowany w `pyproject.toml`). Jednostkowe
+  `tests/unit/test_llm_fake.py` (determinizm, kształt, ucinanie wejścia) i
+  `test_llm_factory.py` (dispatch + walidacja configu — bez sieci/SDK). Integracyjny
+  `tests/integration/test_llm.py` (realny OpenAI, koszt minimalny `max_tokens=5`; **skip,
+  nie fail**, gdy `LLM_PROVIDER`≠`openai` lub brak `LLM_API_KEY`).
+- **[DO UZUPEŁNIENIA] Test mapowania wyjątków `OpenAILLMClient`** — blok
+  `except APITimeoutError/AuthenticationError/RateLimitError/APIError → LLMError` nie ma
+  testu (unit pokrywa `fake`+fabrykę, integracyjny tylko happy-path). To kod, który
+  zadziała wyłącznie w awarii, więc realnie niesprawdzony. Plan: jednostkowy z
+  zamockowanym klientem SDK rzucającym każdy typ błędu i asercją zmapowanego `LLMError`
+  (bez sieci). Tani (~20 linii), domyka jedyną nietestowaną logikę kroku 2.2.
+
+**Decyzje:** klient **async** (FastAPI jest async; `AsyncOpenAI`); interfejs **minimalny**
+(`complete`, jeden prompt — wystarcza dla summaryzacji); `temperature=0.0` domyślnie
+(streszczenia stabilne). LLM **nie** jest pingowany w `/health` (kosztuje, Fake nic nie
+powie). Klient jeszcze **nie** jest podpięty pod żaden endpoint — to dochodzi w 2.4/2.5.
+
+**Konfiguracja (`.env`, poza repo):** `LLM_PROVIDER=openai`, `LLM_MODEL=gpt-4o-mini`,
+`LLM_API_KEY=sk-proj-…` (zwykłe OpenAI, **nie** Azure → dane wychodzą do OpenAI/USA;
+klucz **dev-only**, docelowo Azure UE → Bielik on-prem; rozważyć rotację).
+
+**Weryfikacja (2026-06-19) — przeszła:** `pytest tests/unit` → 9 PASSED (3 config + 6 LLM);
+`get_llm_client()` z `.env` buduje `OpenAILLMClient`; `pytest -m integration_llm` → 1 PASSED
+(realny OpenAI odpowiedział, `usage.total_tokens>0`). Powtórzenie: `pytest tests/unit`
+oraz (z kluczem w `.env`) `pytest -m integration_llm`.
+
 ### Architektura warstwy ekstrakcji — dwie klasy (transport vs domena)
 
 Ekstrakcję rozdzielamy na dwie odpowiedzialności (analogia do `LLMClient`: transport
@@ -212,7 +260,10 @@ oddzielony od logiki). NIE mieszamy „rozmowy z Tiką" z decyzjami o treści.
 - **Wejście** — DOKUS wysyła plik jako multipart (`UploadFile`) czy base64 w JSON?
 - **Wyjście** — samo streszczenie, czy też wyekstrahowany tekst + metadane
   (typ MIME, wykryty język, długość tekstu)?
-- **Dostawca LLM fazy 1** — Azure OpenAI (rekomendacja) czy zwykłe OpenAI na dev?
+- **[ROZSTRZYGNIĘTE 2026-06-19] Dostawca LLM fazy 1** — na dev **zwykłe OpenAI**
+  (`gpt-4o-mini`, klucz zweryfikowany); docelowo Azure OpenAI UE (prywatność) → Bielik
+  on-prem. Implementacja: `OpenAILLMClient` (Azure odłożony do osobnego klienta).
+  Szczegóły: sekcja „Stan kroku 2.2".
 - **Fallback ekstrakcji dla śmieciowej warstwy tekstowej (PDF z PUA)** — DECYZJA DO
   PODJĘCIA przy kroku 3 (patrz uwaga wyżej). Do rozstrzygnięcia: (1) jak wykrywać
   śmieciową warstwę (próg udziału PUA / brak liter / heurystyka długości); (2) czy

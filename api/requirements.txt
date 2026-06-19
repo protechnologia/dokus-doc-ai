@@ -5,3 +5,4 @@ uvicorn[standard]>=0.30
 pydantic>=2.7
 pydantic-settings>=2.3
 httpx>=0.27          # klient HTTP do Tiki (ekstrakcja w 2.3 + healthcheck w /health)
+openai>=1.40         # SDK dostawcy LLM, ukryte za interfejsem LLMClient (krok 2.2)

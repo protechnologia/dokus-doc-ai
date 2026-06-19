@@ -30,15 +30,14 @@ class Settings(BaseSettings):
     # Krotki timeout na samo sprawdzenie dostepnosci Tiki w /health.
     health_check_timeout_seconds: float = 3.0
 
-    # --- Dostawca LLM (klient dochodzi w kroku 2.2) ---
+    # --- Dostawca LLM (klient: app.llm, krok 2.2) ---
     # Faza 1 = komercyjne API. Na dev/test domyslnie 'fake' — nic nie wychodzi na
     # zewnatrz (spojne z zasada "prywatnosc pierwsza").
-    llm_provider: str = "fake"
-    llm_api_key: str | None = None
-    llm_base_url: str | None = None
-    llm_model: str | None = None
-    llm_api_version: str | None = None  # tylko Azure OpenAI
-    llm_timeout_seconds: float = 60.0
+    llm_provider: str = "fake"           # 'fake' (offline) lub 'openai'
+    llm_api_key: str | None = None       # wymagany dla 'openai', np. "sk-proj-..."
+    llm_base_url: str | None = None      # opcjonalny wlasny endpoint zgodny z API OpenAI (.../v1)
+    llm_model: str | None = None         # wymagany dla 'openai', np. "gpt-4o-mini"
+    llm_timeout_seconds: float = 60.0    # timeout wolania LLM [s]
 
 
 @lru_cache

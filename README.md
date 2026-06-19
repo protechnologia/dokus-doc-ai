@@ -8,7 +8,7 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
 - [x] **Krok 1 — ekstrakcja / OCR** (kontener Tika-full + pakiet `pol`)
 - [ ] Krok 2 — API na FastAPI (plan: [CLAUDE.md](CLAUDE.md))
   1. [x] Zalążek FastAPI (`Settings`, `/health`, Dockerfile + usługa `fastapi`, szkielet testów)
-  2. [ ] `LLMClient`
+  2. [x] `LLMClient` (interfejs + implementacja OpenAI + `FakeLLMClient` + fabryka)
   3. [ ] API: czysta ekstrakcja
   4. [ ] API: czysta summaryzacja
   5. [ ] API: pełny pipeline
@@ -27,8 +27,8 @@ docker compose up -d          # uruchamia całą kompozycję (fastapi wstaje po 
 ```
 
 Usługi po starcie: Tika na `:9998` (ekstrakcja/OCR), FastAPI na `:8000` (API + logika).
-Porty nadpiszesz przez `TIKA_PORT` / `FASTAPI_PORT`. Dostawcę LLM (krok 2.2) konfiguruje
-się przez `LLM_*` — domyślnie `fake` (nic nie wychodzi na zewnątrz).
+Porty nadpiszesz przez `TIKA_PORT` / `FASTAPI_PORT`. Dostawcę LLM konfiguruje się przez
+`LLM_*` — obsługiwane `fake` (domyślnie, nic nie wychodzi na zewnątrz) oraz `openai`.
 
 ## Konfiguracja
 
@@ -51,11 +51,10 @@ Ustawienia **aplikacji** (`Settings`):
 | `TIKA_URL` | `http://localhost:9998` | Adres Tiki widziany przez API. W compose: `http://tika:9998`. |
 | `TIKA_TIMEOUT_SECONDS` | `120` | Timeout ekstrakcji w Tice (OCR bywa wolny). |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Krótki ping Tiki w `/health`. |
-| `LLM_PROVIDER` | `fake` | Dostawca LLM. `fake` = nic nie wychodzi na zewnątrz (klient w 2.2). |
-| `LLM_API_KEY` | — | Klucz API dostawcy LLM. |
-| `LLM_BASE_URL` | — | Endpoint / bazowy URL dostawcy LLM. |
-| `LLM_MODEL` | — | Nazwa modelu. |
-| `LLM_API_VERSION` | — | Wersja API (tylko Azure OpenAI). |
+| `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake` (offline, nic nie wychodzi na zewnątrz) lub `openai`. |
+| `LLM_API_KEY` | — | Klucz API dostawcy LLM (wymagany dla `openai`). |
+| `LLM_MODEL` | — | Nazwa modelu, np. `gpt-4o-mini` (wymagana dla `openai`). |
+| `LLM_BASE_URL` | — | Opcjonalny własny endpoint zgodny z API OpenAI (`.../v1`). |
 | `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
 
 ## API
@@ -111,14 +110,16 @@ curl http://localhost:9998/tika    # serwer Tika żyje
 curl http://localhost:8000/health  # API żyje; zwraca też status zależności (tika)
 ```
 
-### Testy integracyjne
+### Testy
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-pytest tests/unit                # jednostkowe (bez usług)
+pytest                           # wszystko (usługi nieuruchomione -> ich testy skip)
+pytest tests/unit                # tylko jednostkowe (bez usług)
 pytest -m integration_tika       # tylko Tika;    wymaga: docker compose up -d tika
 pytest -m integration_fastapi    # tylko FastAPI; wymaga: docker compose up -d fastapi
+pytest -m integration_llm        # tylko LLM;     wymaga: LLM_PROVIDER=openai + klucz (koszt!)
 pytest -m integration            # wszystkie testy integracyjne (parasol)
 ```
 
@@ -129,4 +130,7 @@ działa). Pliki testowe są generowane w locie.
 
 Testy FastAPI sprawdzają `/health` (kształt odpowiedzi, nagłówek `X-Request-ID`, status
 zależności Tiki). Gdy usługa jest niedostępna, jej testy są pomijane (skip), nie failują.
-Szczegóły: [tests/](tests/README.md).
+
+Test LLM (`integration_llm`) robi jedno minimalne wywołanie realnego dostawcy (OpenAI),
+by potwierdzić, że klucz i mapowanie odpowiedzi działają — pomijany, gdy `LLM_PROVIDER`
+nie jest `openai` lub brak klucza. Szczegóły: [tests/](tests/README.md).

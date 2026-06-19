@@ -7,4 +7,5 @@ markers = [
     "integration: wszystkie testy wymagajace uruchomionej uslugi (parasol nad ponizszymi)",
     "integration_tika: testy integracyjne uderzajace w kontener Tika",
     "integration_fastapi: testy integracyjne uderzajace w usluge FastAPI",
+    "integration_llm: testy integracyjne uderzajace w realnego dostawce LLM (koszt!)",
 ]
