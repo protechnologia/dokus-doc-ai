@@ -14,16 +14,29 @@ from functools import lru_cache
 
 from app.config import Settings, get_settings
 from app.llm.base import LLMClient
-from app.llm.fake import FakeLLMClient
-from app.llm.openai_client import OpenAILLMClient
+from app.llm.client_fake import FakeLLMClient
+from app.llm.client_openai import OpenAILLMClient
 
 
 class LLMConfigError(Exception):
     """Niespojna konfiguracja dostawcy LLM (np. brak klucza dla 'openai')."""
 
 
-def build_llm_client(settings: Settings) -> LLMClient:
-    """Zbuduj klienta wg `settings.llm_provider`. Czysta funkcja (bez cache)."""
+def build_llm_client(
+    settings: Settings,    # ustawienia z ENV; istotne: llm_provider/llm_api_key/llm_model
+) -> LLMClient:
+    """Opis metody:
+    Zbuduj klienta wg `settings.llm_provider`. Czysta funkcja (bez cache).
+
+    Przyklad argumentow:
+        settings=Settings(llm_provider="openai", llm_api_key="sk-...", llm_model="gpt-4o-mini")
+
+    Przyklad wyniku:
+        OpenAILLMClient(...)   # 'fake' -> FakeLLMClient(); 'openai' bez klucza -> LLMConfigError
+
+    Raises:
+        LLMConfigError: nieznany provider albo brak wymaganego klucza/modelu dla 'openai'.
+    """
     provider = (settings.llm_provider or "fake").lower()
 
     # --- 'fake': bez sieci, bez klucza — domyslny tryb dev/test ------------------
@@ -49,5 +62,13 @@ def build_llm_client(settings: Settings) -> LLMClient:
 
 @lru_cache
 def get_llm_client() -> LLMClient:
-    """Singleton klienta (analogicznie do get_settings) — budowany raz na proces."""
+    """Opis metody:
+    Singleton klienta (analogicznie do get_settings) — budowany raz na proces.
+
+    Przyklad argumentow:
+        (brak — czyta konfiguracje przez get_settings())
+
+    Przyklad wyniku:
+        ten sam OpenAILLMClient/FakeLLMClient przy kazdym wywolaniu
+    """
     return build_llm_client(get_settings())

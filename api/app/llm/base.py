@@ -78,7 +78,15 @@ class LLMClient(ABC):
         max_tokens:  int | None = None,  # limit dlugosci odpowiedzi, np. 300; None = default dostawcy
         temperature: float = 0.0,        # losowosc; 0.0 = stabilnie (streszczenia maja byc powtarzalne)
     ) -> LLMResult:
-        """Wygeneruj odpowiedz dla pojedynczego promptu uzytkownika.
+        """Opis metody:
+        Wygeneruj odpowiedz dla pojedynczego promptu uzytkownika.
+
+        Przyklad argumentow:
+            user="Streszcz: <tekst>"
+            system="Po polsku"
+
+        Przyklad wyniku:
+            LLMResult(text="<streszczenie>", model="<model>", usage=LLMUsage(...))
 
         Raises:
             LLMError: dowolny blad warstwy LLM (auth/limit/timeout/odpowiedz).

@@ -186,28 +186,30 @@ Pakiet `api/app/llm/`:
   max_tokens, temperature) -> LLMResult`), modele `LLMResult`/`LLMUsage` (Pydantic) oraz
   hierarchia wyjątków domenowych `LLMError` → `LLMAuthError`/`LLMRateLimitError`/
   `LLMTimeoutError`/`LLMResponseError` (logika mapuje je na HTTP dopiero w 2.4/2.5).
-- `llm/fake.py` — `FakeLLMClient`: deterministyczny, offline (prefiks `[FAKE-LLM]` +
+- `llm/client_fake.py` — `FakeLLMClient`: deterministyczny, offline (prefiks `[FAKE-LLM]` +
   pierwsze ~40 słów wejścia). Domyślny dostawca dev/test — nic nie wychodzi na zewnątrz.
-- `llm/openai_client.py` — `OpenAILLMClient` (jedyne miejsce importujące SDK `openai`;
-  import **leniwy** w metodach, więc sam import pakietu nie wymaga SDK). Obsługuje zwykłe
-  OpenAI (`api_key`+`model`, opcjonalny `base_url`). Mapuje wyjątki SDK → `LLMError`.
+- `llm/client_openai.py` — `OpenAILLMClient` (jedyne miejsce importujące SDK `openai` —
+  import zwykły na górze modułu, bez lazy importów: `openai` to twarda zależność
+  projektu, więc nie udajemy, że jest opcjonalny). Obsługuje zwykłe OpenAI
+  (`api_key`+`model`, opcjonalny `base_url`). Mapuje wyjątki SDK → `LLMError`.
   **Azure świadomie pominięty** — gdy będzie trzeba, osobny klient, bez ruszania tego.
+  Czyste fragmenty wydzielone do statycznych helperów: `_build_messages` / `_to_result`
+  (bez sieci) oraz `_map_sdk_error` (klasyfikator wyjątek SDK → `LLMError`; bez
+  sieci/mocka). W `complete` zostaje samo I/O + `try/except`.
 - `llm/factory.py` — `build_llm_client(settings)` + cache'owany `get_llm_client()`. Wybór
   po `LLM_PROVIDER` (`fake`/`openai`); walidacja braku klucza/modelu → `LLMConfigError`
   (czytelny błąd od razu, nie gołe 401 w runtime). Inny provider → `LLMConfigError`.
 - `llm/__init__.py` — publiczne API pakietu (`from app.llm import get_llm_client, ...`).
 - `api/requirements.txt` — dodane `openai>=1.40`. `.env.example` — sekcja LLM (fake/openai).
 - Testy: marker `integration_llm` (zarejestrowany w `pyproject.toml`). Jednostkowe
-  `tests/unit/test_llm_fake.py` (determinizm, kształt, ucinanie wejścia) i
-  `test_llm_factory.py` (dispatch + walidacja configu — bez sieci/SDK). Integracyjny
-  `tests/integration/test_llm.py` (realny OpenAI, koszt minimalny `max_tokens=5`; **skip,
-  nie fail**, gdy `LLM_PROVIDER`≠`openai` lub brak `LLM_API_KEY`).
-- **[DO UZUPEŁNIENIA] Test mapowania wyjątków `OpenAILLMClient`** — blok
-  `except APITimeoutError/AuthenticationError/RateLimitError/APIError → LLMError` nie ma
-  testu (unit pokrywa `fake`+fabrykę, integracyjny tylko happy-path). To kod, który
-  zadziała wyłącznie w awarii, więc realnie niesprawdzony. Plan: jednostkowy z
-  zamockowanym klientem SDK rzucającym każdy typ błędu i asercją zmapowanego `LLMError`
-  (bez sieci). Tani (~20 linii), domyka jedyną nietestowaną logikę kroku 2.2.
+  `tests/unit/test_llm_fake.py` (determinizm, kształt, ucinanie wejścia),
+  `test_llm_factory.py` (dispatch + walidacja configu) oraz `test_llm_openai.py` (czyste
+  helpery `_build_messages`/`_to_result`: kolejność system→user, `content=None`,
+  `usage=None`, fallback modelu) — wszystkie bez sieci/SDK; oraz `test_llm_openai_errors.py`
+  (klasyfikator `_map_sdk_error`: timeout/401/403/429/APIError → właściwy `LLMError`; bez
+  sieci/mocka, `importorskip` na `openai`). Integracyjny `tests/integration/test_llm.py`
+  (realny OpenAI, koszt minimalny `max_tokens=5`; **skip, nie fail**, gdy
+  `LLM_PROVIDER`≠`openai` lub brak `LLM_API_KEY`).
 
 **Decyzje:** klient **async** (FastAPI jest async; `AsyncOpenAI`); interfejs **minimalny**
 (`complete`, jeden prompt — wystarcza dla summaryzacji); `temperature=0.0` domyślnie
