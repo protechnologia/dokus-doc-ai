@@ -259,9 +259,12 @@ oddzielony od logiki). NIE mieszamy „rozmowy z Tiką" z decyzjami o treści.
 
 ### Kontrakty do ustalenia przed startem
 
-- **Wejście** — DOKUS wysyła plik jako multipart (`UploadFile`) czy base64 w JSON?
-- **Wyjście** — samo streszczenie, czy też wyekstrahowany tekst + metadane
-  (typ MIME, wykryty język, długość tekstu)?
+- **[ROZSTRZYGNIĘTE 2026-06-20] Wejście** — **base64 w JSON** (nie multipart). Endpoint
+  ekstrakcji przyjmuje `content_base64` + opcjonalne `filename`/`content_type` (hinty dla
+  Tiki; brak → autodetekcja typu po stronie Tiki). Rozbicie: „Plan kroku 2.3" niżej.
+- **[ROZSTRZYGNIĘTE 2026-06-20] Wyjście** — **wyekstrahowany tekst + metadane** (MIME,
+  wykryty język, długość), nie samo streszczenie. Metadane przydają się diagnostycznie
+  (np. jaki MIME wykryto, czy poszło OCR) i pod pełny pipeline w kroku 2.5.
 - **[ROZSTRZYGNIĘTE 2026-06-19] Dostawca LLM fazy 1** — na dev **zwykłe OpenAI**
   (`gpt-4o-mini`, klucz zweryfikowany); docelowo Azure OpenAI UE (prywatność) → Bielik
   on-prem. Implementacja: `OpenAILLMClient` (Azure odłożony do osobnego klienta).
@@ -274,6 +277,72 @@ oddzielony od logiki). NIE mieszamy „rozmowy z Tiką" z decyzjami o treści.
   globalnie spowalnia wszystkie PDF-y); (3) jak to testować — m.in. czego asertować na
   `samples/sample_01.pdf` (test integracyjny PDF jest WSTRZYMANY do tej decyzji; test
   OCR dla `samples/sample_01.jpg` jest niezależny i może powstać wcześniej).
+
+### Plan kroku 2.3 — czysta ekstrakcja (rozbicie na podkroki)
+
+Realizuje krok 3 z listy „Kroki" wyżej. Buduje na sekcjach „Architektura warstwy
+ekstrakcji" (transport vs domena) i „Kontrakty". Kolejność „od części do całości":
+najpierw transport, potem domena (happy path), na końcu endpoint spinający całość.
+
+**Decyzje wejściowe (rozstrzygnięte 2026-06-20):**
+- **Podejście:** najpierw **szkielet** (`TikaClient` + happy path ekstrakcji natywnej),
+  dopiero potem **jakość** (detekcja PUA + OCR-fallback) i **strażnik zasobów** (limit
+  stron). Te dwa ostatnie zostają ŚWIADOMIE ODŁOŻONE poza to podejście — pozostają jako
+  decyzja z „Kontrakty"/architektury, nie wchodzą do 2.3.1–2.3.4.
+- **Wejście:** base64 w JSON. **Wyjście:** tekst + metadane (MIME, język, długość).
+  (patrz rozstrzygnięte „Kontrakty" wyżej.)
+
+**2.3.1 — `TikaClient` (transport). [ZROBIONE i ZWERYFIKOWANE]** Nowy pakiet
+`api/app/extraction/`. **Konkretna
+klasa, nie abstrakcja** (uzasadnienie w „Architektura warstwy ekstrakcji" — Tika zostaje,
+interfejs formalizujemy dopiero przy drugim silniku). Kontrakt: `bytes (+ opcjonalny
+content-type/filename) → surowy tekst + surowe metadane`. Realizacja przez **`PUT
+/rmeta/text`** (jedno wywołanie zwraca JSON: treść pod `X-TIKA:content` + metadane, m.in.
+wykryty `Content-Type`) — zamiast osobnych `/tika` + `/meta`. Struktura jak
+`OpenAILLMClient`: czyste helpery parsujące JSON rmeta (`_pick_text`/`_pick_metadata`)
+wydzielone od I/O; klasyfikator błędów `_map_*` (transport/HTTP Tiki → wyjątek domenowy)
+testowalny bez sieci. Wyjątki: `TikaError` → `TikaUnavailableError` (transport/timeout —
+Tika nie odpowiada) / `TikaExtractionError` (Tika odpowiedziała błędem na plik:
+nieobsługiwany/uszkodzony). Mapowanie na HTTP dopiero w 2.3.3. Testy: jednostkowe na
+helperach + klasyfikatorze (bez sieci); integracyjny `integration_tika` na realnej Tice
+(DOCX natywny).
+
+**Weryfikacja (2026-06-20) — przeszła:** `pytest tests/unit` → 32 PASSED (w tym 13 dla
+`TikaClient`: `_build_headers`/`_pick_text`/`_pick_metadata` + klasyfikator
+`_map_http_error` na wyjątkach `httpx`, wszystko bez sieci); `pytest -m integration_tika`
+na realnym kontenerze → PASSED: `extract` DOCX **bez** podanego `content_type` zwrócił
+poprawny tekst z polskimi znakami (`gęślą`), a Tika sama wykryła MIME DOCX
+(`...wordprocessingml.document`) — potwierdza, że kształt `/rmeta/text` (lista; treść
+kontenera w `[0]` pod `X-TIKA:content`) jest taki, jak założono. Klient async odpalany
+w teście przez `asyncio.run` (brak `pytest-asyncio`, spójnie z `test_llm.py`).
+
+**2.3.2 — `ExtractionService` (domena, happy path).** Logika nad surowym wynikiem,
+niezależna od tego, że pod spodem Tika. W tym podejściu **tylko**: normalizacja whitespace
++ wyliczenie metadanych (MIME z metadanych Tiki; długość = znaki/słowa; **język** —
+defensywnie z metadanych Tiki, gdy brak → `None`; porządna detekcja to refinement). Pusty
+wynik po normalizacji → wyjątek domenowy `EmptyExtractionError`. **ŚWIADOMIE POZA
+ZAKRESEM** (odłożone, patrz architektura + „Kontrakty"): detekcja śmieciowej warstwy
+**PUA**, **OCR-fallback** (`X-Tika-PDFOcrStrategy`), **limit zakresu OCR** (`MAX_OCR_PAGES`),
+rekurencyjna obsługa **embedded** (rmeta children). Test PDF (`samples/sample_01.pdf`)
+pozostaje **WSTRZYMANY** do decyzji o PUA. Testy: jednostkowe z atrapą transportu
+(normalizacja, liczenie znaków/słów, wyciągnięcie MIME, pusty → wyjątek).
+
+**2.3.3 — Modele I/O + endpoint `POST /extract`.** `api/app/models.py`: `ExtractRequest`
+(`content_base64` + opcjonalne `filename`/`content_type`), `ExtractResponse` (tekst +
+zagnieżdżone metadane). Router `api/app/routers/extract.py`: dekodowanie base64 + walidacja
+rozmiaru (nowy `Settings.max_upload_bytes`), DI `ExtractionService` **inline przez
+`Depends`** (bez osobnej fabryki — Tika to jeden silnik, w odróżnieniu od wymienialnego
+LLM). Mapowanie wyjątków → HTTP: zły base64 → **422**; pusty plik → **422**; za duży →
+**413**; `TikaUnavailableError` → **502**; `TikaExtractionError`/`EmptyExtractionError` →
+**422**. Rejestracja routera w `main.py`. Testy: integracyjne `integration_fastapi` przez
+endpoint (DOCX natywny; **OCR PNG** — niezależny od decyzji PUA, więc może powstać tu).
+
+**2.3.4 — Config + dokumentacja.** `MAX_UPLOAD_BYTES` w `Settings` + `.env.example`; sekcja
+`POST /extract` w README (wejście/wyjście/kody błędów); aktualizacja statusu README i
+dopisanie „Stan kroku 2.3" po weryfikacji.
+
+**Weryfikacja całości 2.3:** `pytest tests/unit` + `pytest -m integration_fastapi` (DOCX i
+PNG przez endpoint), `docker compose up -d` (oba kontenery `healthy`).
 
 ### Przekrojowe (dotyczą wszystkich endpointów)
 

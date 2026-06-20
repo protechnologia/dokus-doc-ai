@@ -10,6 +10,9 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
   1. [x] Zalążek FastAPI (`Settings`, `/health`, Dockerfile + usługa `fastapi`, szkielet testów)
   2. [x] `LLMClient` (interfejs + implementacja OpenAI + `FakeLLMClient` + fabryka)
   3. [ ] API: czysta ekstrakcja
+     1. [x] `TikaClient` — transport do Tiki (surowy tekst + metadane, mapowanie błędów Tiki na wyjątki)
+     2. [ ] `ExtractionService` — domena: normalizacja + metadane (happy path; detekcja PUA / OCR-fallback / limit stron odłożone)
+     3. [ ] `POST /extract` — wejście base64 (JSON), wyjście tekst + metadane, mapowanie błędów na kody HTTP
   4. [ ] API: czysta summaryzacja
   5. [ ] API: pełny pipeline
 - [ ] Krok 3 — integracja z DOKUS
