@@ -1,10 +1,10 @@
 """Modele wejscia/wyjscia (Pydantic).
 
-Granica HTTP uslugi: /health (krok 2.1) oraz ekstrakcja (krok 2.3). Modele summaryzacji
-dochodza w 2.4. Modele API sa SWIADOMIE odrebne od modeli domenowych (`ExtractionResult`/
-`ExtractionMetadata` w `app.extraction`): domena moze ewoluowac (np. dojdzie info o
-OCR-fallbacku w 2.3.5) bez zmiany kontraktu HTTP. Mapowanie domena -> API robi
-`ExtractResponse.from_result` (cienkie, jawne).
+Granica HTTP uslugi: /health (krok 2.1), ekstrakcja (krok 2.3), summaryzacja (krok 2.4)
+oraz pelny pipeline (krok 2.5). Modele API sa SWIADOMIE odrebne od modeli domenowych
+(`ExtractionResult`/`SummarizationResult`/`PipelineResult`): domena moze ewoluowac (np.
+doszla info o OCR-fallbacku w 2.3.5) bez zmiany kontraktu HTTP. Mapowanie domena -> API
+robi `*.from_result` (cienkie, jawne).
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.extraction import ExtractionResult
 from app.llm import LLMUsage
+from app.pipeline import PipelineResult
 from app.summarization import SummarizationResult
 
 # Status pojedynczej zaleznosci zewnetrznej (np. Tiki).
@@ -163,5 +164,77 @@ class SummarizeResponse(BaseModel):
                 input_chars = meta.input_chars,
                 truncated   = meta.truncated,
                 usage       = meta.usage,
+            ),
+        )
+
+
+# --- Pelny pipeline: POST /extract-and-summarize (krok 2.5.2) --------------------
+
+
+class SummarizeDocumentRequest(BaseModel):
+    """Wejscie `POST /extract-and-summarize` — plik w base64 (jak /extract; JSON, nie multipart).
+
+    Identyczny ksztalt jak `ExtractRequest` (osobny model, bo to osobny kontrakt endpointu):
+    `filename`/`content_type` to OPCJONALNE podpowiedzi typu dla Tiki; brak -> autodetekcja.
+    """
+
+    content_base64: str       = Field(description="Zawartosc pliku zakodowana base64.")
+    filename: str | None      = Field(default=None, description="Opcjonalna nazwa pliku (podpowiedz typu dla Tiki), np. 'pismo.pdf'.")
+    content_type: str | None  = Field(default=None, description="Opcjonalny MIME (podpowiedz dla Tiki), np. 'application/pdf'; brak = autodetekcja.")
+
+
+class SummarizeDocumentResponse(BaseModel):
+    """Wyjscie `POST /extract-and-summarize` — streszczenie + pelny tekst + metadane OBU etapow.
+
+    Metadane ZAGNIEZDZONE (reuse `ExtractMetadata` + `SummarizeMetadata`), by uniknac kolizji
+    nazw (`char_count` ekstrakcji vs `input_chars` summaryzacji) i by kazdy etap byl
+    diagnozowalny osobno. `text` = PELNY wyekstrahowany tekst (przed truncacja pod LLM) —
+    `summarization.truncated` mowi, czy model widzial tylko poczatek.
+    """
+
+    summary: str                     = Field(description="Streszczenie dokumentu (hybryda: akapit + punkty).")
+    text: str                        = Field(description="Pelny wyekstrahowany tekst (przed truncacja pod LLM).")
+    extraction: ExtractMetadata      = Field(description="Metadane etapu ekstrakcji (MIME, jezyk, dlugosc, OCR, strony).")
+    summarization: SummarizeMetadata = Field(description="Metadane etapu summaryzacji (model, dlugosc wejscia, truncacja, zuzycie).")
+
+    @classmethod
+    def from_result(
+        cls,
+        result: PipelineResult,   # domenowy wynik z PipelineService.process
+    ) -> SummarizeDocumentResponse:
+        """Opis metody:
+        Zmapuj domenowy `PipelineResult` na model odpowiedzi HTTP. Cienkie, jawne przepisanie
+        pol obu etapow na zagniezdzone metadane API — granica miedzy domena a kontraktem HTTP.
+
+        Przyklad argumentow:
+            result=PipelineResult(summary="Urzad wzywa...", text="Pelna tresc...",
+                extraction=ExtractionMetadata(content_type="application/pdf", ...),
+                summarization=SummarizationMetadata(model="gpt-4o-mini", ...))
+
+        Przyklad wyniku:
+            SummarizeDocumentResponse(summary="Urzad wzywa...", text="Pelna tresc...",
+                extraction=ExtractMetadata(content_type="application/pdf", ...),
+                summarization=SummarizeMetadata(model="gpt-4o-mini", ...))
+        """
+        ex = result.extraction
+        su = result.summarization
+        return cls(
+            summary    = result.summary,
+            text       = result.text,
+            extraction = ExtractMetadata(
+                content_type    = ex.content_type,
+                language        = ex.language,
+                char_count      = ex.char_count,
+                word_count      = ex.word_count,
+                ocr_used        = ex.ocr_used,
+                pages_total     = ex.pages_total,
+                pages_processed = ex.pages_processed,
+                ocr_truncated   = ex.ocr_truncated,
+            ),
+            summarization = SummarizeMetadata(
+                model       = su.model,
+                input_chars = su.input_chars,
+                truncated   = su.truncated,
+                usage       = su.usage,
             ),
         )

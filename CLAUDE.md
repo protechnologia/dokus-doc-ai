@@ -63,8 +63,9 @@ Tesseract — OCR działa po doinstalowaniu pakietu `pol`, bez osobnego kontener
 
 1. **[ZROBIONE i ZWERYFIKOWANE] OCR / ekstrakcja** — kontener Tika-full z pakietem
    `pol`. Szczegóły niżej (sekcja „Stan kroku 1").
-2. **API na FastAPI** — przyjmuje dokument, woła extract, składa prompt, woła LLM,
-   zwraca wynik.
+2. **[ZROBIONE i ZWERYFIKOWANE] API na FastAPI** — przyjmuje dokument, woła extract, składa
+   prompt, woła LLM, zwraca wynik. Endpointy: `/health`, `/extract`, `/summarize`,
+   `/extract-and-summarize` (pełny pipeline). Szczegóły: sekcje „Plan kroku 2.1–2.5".
 3. **Integracja z DOKUS** — ESOD wysyła oryginał, dostaje zwrotnie podsumowanie.
 4. **Migracja LLM na RunPod** — maszyna z GPU + własny model w chmurze.
 5. **Migracja LLM na własną maszynę** — GPU w urzędzie, Ollama + Bielik lokalnie.
@@ -131,7 +132,9 @@ pipeline. Każdy endpoint dostaje testy (marker `integration_fastapi` + jednostk
    tekst; system prompt po polsku (format hybrydowy pod osobę dekretującą); wołanie przez
    `LLMClient`; mapowanie `LLMError` → HTTP; truncacja wejścia z logiem (`LLM_MAX_INPUT_CHARS`).
    Szczegóły i weryfikacja: „Plan kroku 2.4".
-5. **API: pełny pipeline** (3 → 4) — upload → ekstrakcja → streszczenie → odpowiedź.
+5. **[ZROBIONE i ZWERYFIKOWANE] API: pełny pipeline** (3 → 4) — `POST /extract-and-summarize`:
+   upload → ekstrakcja → streszczenie → odpowiedź (kompozycja serwisów, bez nowej logiki).
+   Domyka KROK 2. Szczegóły i weryfikacja: „Plan kroku 2.5".
 
 ### Stan kroku 2.1 — zalążek FastAPI (ZROBIONE i ZWERYFIKOWANE)
 
@@ -542,7 +545,7 @@ domenowej — KOMPONUJE istniejące serwisy.** Domyka KROK 2 (API na FastAPI).
 > DI: router buduje `PipelineService` nad `ExtractionService` (`TikaClient` inline) +
 > `SummarizationService` (`LLMClient` z fabryki) — łączy wzorce DI z `/extract` i `/summarize`.
 
-**Decyzje wejściowe (propozycje — do potwierdzenia przy starcie 2.5):**
+**Decyzje wejściowe (rozstrzygnięte przy realizacji 2.5):**
 
 - **[ROZSTRZYGNIĘTE] Nazwa endpointu = `POST /extract-and-summarize`** (opisowa: robi oba
   etapy; odróżnia od `/extract` i `/summarize`, które robią po jednym).
@@ -553,9 +556,9 @@ domenowej — KOMPONUJE istniejące serwisy.** Domyka KROK 2 (API na FastAPI).
   LLM — `summarization.truncated` mówi, czy model widział tylko część). Zagnieżdżenie reużywa
   wprost `ExtractMetadata` + `SummarizeMetadata` i unika kolizji `char_count` (ekstrakcja) vs
   `input_chars` (summaryzacja). Modele API odrębne; mapowanie z `PipelineResult`.
-- **[PROPOZYCJA] Wejście = base64 w JSON** (jak `/extract`): `content_base64` + opcjonalne
+- **[ROZSTRZYGNIĘTE] Wejście = base64 w JSON** (jak `/extract`): `content_base64` + opcjonalne
   `filename`/`content_type`.
-- **[PROPOZYCJA] Mapowanie błędów = UNIA `/extract` + `/summarize`:** zły base64 / pusty plik /
+- **[ROZSTRZYGNIĘTE] Mapowanie błędów = UNIA `/extract` + `/summarize`:** zły base64 / pusty plik /
   `TikaExtractionError` / `EmptyExtractionError` / `EmptyInputError` → **422**; za duży → **413**;
   `TikaUnavailableError` → **502**; `LLMTimeoutError` → **504**; `LLMRateLimitError` → **503**;
   `LLMConfigError`/`LLMAuthError` → **500**; `LLMResponseError`/`LLMError` → **502**.
@@ -567,26 +570,46 @@ domenowej — KOMPONUJE istniejące serwisy.** Domyka KROK 2 (API na FastAPI).
 
 **Podkroki (od części do całości; każdy z testami):**
 
-**2.5.1 — `PipelineService` (orkiestrator).** Pakiet `api/app/pipeline/`. `process(...)` komponuje
-extract→summarize (przekazuje `extraction.text` jako wejście summaryzacji); `PipelineResult` =
-`summary` + `text` (pełny) + metadane obu etapów. Złożenie metadanych w czystym helperze.
-Testy: jednostkowe z ATRAPAMI obu serwisów — kolejność wywołań, przekazanie `text` z extract do
-summarize, złożenie wyniku, propagacja wyjątków obu warstw (mapuje endpoint w 2.5.2).
+**2.5.1 — `PipelineService` (orkiestrator). [ZROBIONE i ZWERYFIKOWANE]** Pakiet `api/app/pipeline/`.
+`process(...)` komponuje extract→summarize (przekazuje `extraction.text` jako wejście
+summaryzacji); `PipelineResult` = `summary` + `text` (pełny) + metadane obu etapów
+(reuse domenowych `ExtractionMetadata`/`SummarizationMetadata`). Złożenie w czystym helperze
+`_build_result`. **Bez własnego I/O** — całe I/O w serwisach składowych. Wyjątki obu warstw
+NIE są łapane (mapuje endpoint w 2.5.2). Świadomie BEZ testu integracyjnego na poziomie
+serwisu: orkiestrator nie izoluje żadnej realnej zależności (w odróżnieniu od `ExtractionService`/
+`SummarizationService`), więc realny przebieg pokrywa test endpointu (2.5.2) + warstwy niżej
+(`integration_tika`/`integration_llm`). Testy: jednostkowe `test_pipeline_service.py` na ATRAPACH
+obu serwisów (kolejność extract→summarize, przekazanie pełnego `text`, złożenie wyniku,
+propagacja wyjątków obu warstw — przy błędzie ekstrakcji summaryzacja niewołana).
 
-**2.5.2 — Modele I/O + endpoint.** `models.py`: `SummarizeDocumentRequest`/`...Response`
-(+ `from_result`). Router `api/app/routers/pipeline.py`: DI obu serwisów, mapowanie błędów = unia
-(jak wyżej). Rejestracja w `main.py`. Testy: jednostkowe (`TestClient` + `dependency_overrides`,
-atrapa pipeline'u — mapowanie kodów obu warstw, bez sieci) + integracyjne (`integration_fastapi`
-na `fake` — kontrakt end-to-end przez kontener; realny przebieg pokrywają już `integration_tika`/
-`integration_llm` na warstwach niżej).
+**2.5.2 — Modele I/O + endpoint. [ZROBIONE i ZWERYFIKOWANE]** `models.py`:
+`SummarizeDocumentRequest`/`SummarizeDocumentResponse` (+ `from_result`; metadane API
+ZAGNIEŻDŻONE — reuse `ExtractMetadata`+`SummarizeMetadata`, by uniknąć kolizji `char_count` vs
+`input_chars`). Router `api/app/routers/pipeline.py`: DI łączy oba wzorce (`ExtractionService`
+nad `TikaClient` inline + `SummarizationService` nad `get_llm_client()`), czyste helpery
+`_decode_base64`/`_validate_size` jak w `/extract`, mapowanie błędów = UNIA (zły config LLM z
+fabryki → 500 już w DI). Rejestracja w `main.py`. Testy: jednostkowe `test_fastapi_pipeline.py`
+(`TestClient` + `dependency_overrides`, atrapa pipeline'u — happy path + walidacja base64/rozmiaru
++ pełna unia mapowań kodów OBU warstw, bez sieci) + integracyjne `test_fastapi_pipeline.py`
+(`integration_fastapi`, DOCX end-to-end przez kontener, provider-agnostyczne + złe base64 → 422).
 
-**2.5.3 — Dokumentacja.** Sekcja `POST /extract-and-summarize` w README (wejście/wyjście/kody +
-`curl`), aktualizacja checklisty (po 2.5 cały **krok 2** zamknięty), odsyłacz do „Spójność
-limitów pipeline'u". Bez nowego configu (reuse istniejących limitów).
+**2.5.3 — Dokumentacja. [ZROBIONE i ZWERYFIKOWANE]** Sekcja `POST /extract-and-summarize` w README
+(wejście + przykładowe żądanie + wyjście + kody błędów + `curl`), zaktualizowany akapit `## API`
+(cztery endpointy), checklista statusu (Krok 2 odznaczony, 2.5.1–2.5.3 zaznaczone), odsyłacz do
+„Spójność limitów pipeline'u". Bez nowego configu (reuse istniejących limitów).
 
 **Świadomie poza 2.5** (patrz „Świadomie pominięte"): async przez kolejkę (RabbitMQ),
 uwierzytelnianie API, monitoring, streaming odpowiedzi, chunking. To domyka **krok 2**; dalej
 **krok 3** (integracja z DOKUS) konsumuje ten endpoint.
+
+**Weryfikacja całości 2.5 (2.5.1–2.5.3) — przeszła (2026-06-21):** `pytest tests/unit` →
+**119 PASSED** (było 106; +13 dla routera pipeline'u, +5 wcześniej dla `PipelineService` =
+liczone razem). `docker compose up -d --build fastapi` OK; oba kontenery `healthy`;
+`pytest -m "integration_fastapi or integration_tika"` → **19 PASSED** (+2 dla pipeline'u). Smoke
+przez kontener (realny OpenAI): `POST /extract-and-summarize` (`text/plain`) → `200` z poprawnym
+polskim streszczeniem hybrydowym + zagnieżdżonymi metadanymi obu etapów (`extraction.content_type`,
+`summarization.model`/`usage`). **Po 2.5 cały KROK 2 (API na FastAPI) zamknięty.** Powtórzenie:
+`docker compose up -d fastapi` + `pytest`.
 
 ### Przekrojowe (dotyczą wszystkich endpointów)
 

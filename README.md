@@ -1,12 +1,11 @@
-# DOKUS Doc AI
+# dokus-doc-ai
 
-Warstwa AI dla obiegu dokumentów DOKUS — ekstrakcja treści (w tym OCR skanów) i
-streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
+Warstwa AI dla obiegu dokumentów DOKUS firmy Tensoft. Obsługuje ekstrakcję treści (w tym OCR) z różnorodnych plików (np. PDF, DOCX, JPG) oraz jej streszczanie za pomocą LLM (komercyjne API w chmurze, np. OpenAI, lub lokalny Bielik przez Ollama). Usługa jest całkowicie niezależna od systemu obiegu dokumentów i może być wykorzystana również do innych celów, choć jej prompty są zoptymalizowane pod zadania typowe dla obiegów, czyli dekretację i akceptację dokumentów.
 
 ## Status
 
 - [x] **Krok 1 — ekstrakcja / OCR** (kontener Tika-full + pakiet `pol`)
-- [ ] Krok 2 — API na FastAPI (plan: [CLAUDE.md](CLAUDE.md))
+- [x] **Krok 2 — API na FastAPI** (plan: [CLAUDE.md](CLAUDE.md))
   1. [x] Zalążek FastAPI (`Settings`, `/health`, Dockerfile + usługa `fastapi`, szkielet testów)
   2. [x] `LLMClient` (interfejs + implementacja OpenAI + `FakeLLMClient` + fabryka)
   3. [x] API: czysta ekstrakcja
@@ -19,10 +18,10 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
      1. [x] `SummarizationService` — domena: system prompt + szablon + truncacja + wołanie `LLMClient`
      2. [x] `POST /summarize` — wejście tekst, wyjście streszczenie + metadane, mapowanie `LLMError` → HTTP
      3. [x] Config (`LLM_MAX_INPUT_CHARS`) + dokumentacja
-  5. [ ] API: pełny pipeline
-     1. [ ] `PipelineService` — orkiestrator: ekstrakcja → streszczenie (kompozycja serwisów)
-     2. [ ] `POST /extract-and-summarize` — wejście base64, wyjście streszczenie + metadane obu etapów, mapowanie błędów (unia)
-     3. [ ] Dokumentacja (sekcja endpointu + przykład)
+  5. [x] API: pełny pipeline
+     1. [x] `PipelineService` — orkiestrator: ekstrakcja → streszczenie (kompozycja serwisów)
+     2. [x] `POST /extract-and-summarize` — wejście base64, wyjście streszczenie + metadane obu etapów, mapowanie błędów (unia)
+     3. [x] Dokumentacja (sekcja endpointu + przykład)
 - [ ] Krok 3 — integracja z DOKUS
 - [ ] Krok 4 — migracja LLM na RunPod
 - [ ] Krok 5 — migracja LLM na własną maszynę
@@ -32,30 +31,27 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
 Wymagania: Docker + Docker Compose.
 
 ```bash
-cp .env.example .env          # uzupełnij konfigurację (np. TIKA_PORT, FASTAPI_PORT)
-docker compose build          # buduje obrazy wszystkich usług
-docker compose up -d          # uruchamia całą kompozycję (fastapi wstaje po Tika healthy)
+cp .env.example .env  # nadpisz domyślną konfigurację
+docker compose build  # zbuduj obrazy wszystkich usług
+docker compose up -d  # uruchom całą kompozycję
 ```
-
-Usługi po starcie: Tika na `:9998` (ekstrakcja/OCR), FastAPI na `:8000` (API + logika).
-Porty nadpiszesz przez `TIKA_PORT` / `FASTAPI_PORT`. Dostawcę LLM konfiguruje się przez
-`LLM_*` — obsługiwane `fake` (domyślnie, nic nie wychodzi na zewnątrz) oraz `openai`.
 
 ## Konfiguracja
 
-Cała konfiguracja przez ENV (zasada projektu). Poniżej przegląd; **źródłem prawdy** są
-[.env.example](.env.example) (szablon) oraz [api/app/config.py](api/app/config.py)
-(`Settings` — domyślne wartości aplikacji). Wartości w kolumnie „Domyślnie" są
-orientacyjne.
+Cała konfiguracja odbywa się przez zmienne środowiskowe.
 
-Zmienne **compose** (mapowanie portów na hoście; aplikacja ich nie czyta):
+Źródłem prawdy o dostępnych opcjach są dwa pliki: [.env.example](.env.example) (szablon
+zmiennych dla Docker Compose) oraz [api/app/config.py](api/app/config.py) (typowane
+ustawienia aplikacji wczytywane z ENV przez pydantic-settings).
+
+Zmienne wykorzystywane przez **Docker Compose**:
 
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
-| `TIKA_PORT` | `9998` | Port Tiki wystawiony na hoście. |
+| `TIKA_PORT` | `9998` | Port Apache Tika wystawiony na hoście. |
 | `FASTAPI_PORT` | `8000` | Port API wystawiony na hoście. |
 
-Ustawienia **aplikacji** (`Settings`):
+Zmienne wykorzystywane przez **logikę aplikacji**:
 
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
@@ -74,8 +70,9 @@ Ustawienia **aplikacji** (`Settings`):
 ## API
 
 Bazowy adres: `http://localhost:8000` (port z `FASTAPI_PORT`). Interaktywna dokumentacja
-(Swagger UI) pod `/docs`. Dostępne endpointy: `GET /health` i `POST /extract` (czysta
-ekstrakcja). Streszczanie i pełny pipeline dochodzą w kolejnych krokach (2.4–2.5).
+(Swagger UI) pod `/docs`. Dostępne endpointy: `GET /health`, `POST /extract` (czysta
+ekstrakcja), `POST /summarize` (czysta summaryzacja) oraz `POST /extract-and-summarize`
+(pełny pipeline: plik → tekst → streszczenie).
 
 Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
 ten sam identyfikator trafia do logów, co ułatwia korelację.
@@ -265,6 +262,86 @@ curl -X POST http://localhost:8000/summarize \
 > Długie wejście jest **ucinane** do `LLM_MAX_INPUT_CHARS` znaków (truncacja pod okno modelu,
 > z metadaną `truncated`) — to co innego niż limit stron ekstrakcji (`MAX_OCR_PAGES`). Oba
 > limity warto trzymać spójnie: patrz „Spójność limitów pipeline'u”.
+
+### `POST /extract-and-summarize`
+
+Pełny pipeline w jednym wywołaniu: **plik → tekst → streszczenie**. Łączy `POST /extract`
+(ekstrakcja, w tym OCR i jakość) z `POST /summarize` (streszczenie pod dekretację) — to
+docelowy endpoint pod integrację z DOKUS. Wejście jak w `/extract` (**base64 w JSON**), wyjście
+jak w `/summarize` **plus** pełny wyekstrahowany tekst i metadane **obu** etapów.
+
+Wejście (`SummarizeDocumentRequest`):
+
+| Pole | Wymagane | Opis |
+|---|---|---|
+| `content_base64` | tak | Zawartość pliku zakodowana base64. |
+| `filename` | nie | Nazwa pliku (podpowiedź typu), np. `pismo.pdf`. |
+| `content_type` | nie | MIME (podpowiedź), np. `application/pdf`; brak → autodetekcja. |
+
+Przykładowe żądanie (`content_base64` skrócony):
+
+```json
+{
+  "content_base64": "JVBERi0xLjcKJeLjz9MKMyAwIG9iago...",
+  "filename": "pismo.pdf",
+  "content_type": "application/pdf"
+}
+```
+
+Wyjście (`SummarizeDocumentResponse`) — streszczenie + **pełny** wyekstrahowany tekst +
+**zagnieżdżone** metadane obu etapów (`extraction` jak w `/extract`, `summarization` jak w
+`/summarize`):
+
+```json
+{
+  "summary": "Urząd Skarbowy wzywa do zapłaty zaległości...\n\n• Typ pisma: wezwanie\n• Nadawca: Urząd Skarbowy\n• Termin: 14 dni\n• Akcja: zapłata",
+  "text": "Pełna treść wyekstrahowanego dokumentu...",
+  "extraction": {
+    "content_type": "application/pdf",
+    "language": "pl",
+    "char_count": 4200,
+    "word_count": 600,
+    "ocr_used": true,
+    "pages_total": 3,
+    "pages_processed": 3,
+    "ocr_truncated": false
+  },
+  "summarization": {
+    "model": "gpt-4o-mini",
+    "input_chars": 4200,
+    "truncated": false,
+    "usage": { "prompt_tokens": 1200, "completion_tokens": 90, "total_tokens": 1290 }
+  }
+}
+```
+
+`text` to **pełny** tekst (przed truncacją pod okno modelu) — gdy był dłuższy niż
+`LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko początek.
+Znaczenie pól w obu blokach metadanych — patrz sekcje `POST /extract` i `POST /summarize` wyżej.
+
+Kody błędów = **unia** `/extract` i `/summarize` (dokument przechodzi przez obie warstwy):
+
+| Kod | Kiedy |
+|---|---|
+| `413` | Plik większy niż `MAX_UPLOAD_BYTES`. |
+| `422` | Złe base64 / pusty plik / Tika odrzuciła plik / brak treści po ekstrakcji / puste wejście do LLM. |
+| `500` | Błędna konfiguracja dostawcy LLM / zły klucz (nasz config serwera). |
+| `502` | `tika-server` niedostępny / inny błąd po stronie dostawcy LLM. |
+| `503` | Dostawca LLM dławi (limit zapytań / kwota). |
+| `504` | Dostawca LLM nie odpowiedział w czasie (timeout). |
+
+Wywołanie (plik → base64 → JSON):
+
+```bash
+B64=$(base64 -w0 pismo.pdf)
+curl -X POST http://localhost:8000/extract-and-summarize \
+  -H 'Content-Type: application/json' \
+  -d "{\"content_base64\": \"$B64\", \"content_type\": \"application/pdf\"}"
+```
+
+> Dokument przechodzi przez **wszystkie trzy** bramki naraz (`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES`
+> → `LLM_MAX_INPUT_CHARS`) — tu spójność tych limitów jest najważniejsza w praktyce: patrz
+> „Spójność limitów pipeline'u”.
 
 ## Testy
 
