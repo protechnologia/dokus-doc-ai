@@ -127,9 +127,10 @@ pipeline. Każdy endpoint dostaje testy (marker `integration_fastapi` + jednostk
    wynik OCR). Osobny problem rozwiązany w 2.3.5: śmieciowa warstwa tekstowa (PDF z PUA)
    wykrywana + OCR-fallback + limit stron — pełny opis i zmierzone dowody w „Plan kroku 2.3
    → 2.3.5". Cały krok 2.3 (2.3.1–2.3.5) domknięty i zweryfikowany.
-4. **API: czysta summaryzacja** — wejście = tekst; szablon promptu + system prompt po
-   polsku (kątem osoby dekretującej); wołanie przez `LLMClient`; obsługa timeoutów/
-   rate-limit. Długi dokument na teraz: prosta truncacja z logiem (chunking odłożony).
+4. **[ZROBIONE i ZWERYFIKOWANE] API: czysta summaryzacja** — `POST /summarize`: wejście =
+   tekst; system prompt po polsku (format hybrydowy pod osobę dekretującą); wołanie przez
+   `LLMClient`; mapowanie `LLMError` → HTTP; truncacja wejścia z logiem (`LLM_MAX_INPUT_CHARS`).
+   Szczegóły i weryfikacja: „Plan kroku 2.4".
 5. **API: pełny pipeline** (3 → 4) — upload → ekstrakcja → streszczenie → odpowiedź.
 
 ### Stan kroku 2.1 — zalążek FastAPI (ZROBIONE i ZWERYFIKOWANE)
@@ -431,6 +432,161 @@ PDF). Integracyjne na realnej Tice:
 obrazowym z `max_ocr_pages=1`: tylko strona 1 zOCR-owana, metadane 1 z 3); `integration_fastapi`
 → 7 PASSED (w tym `sample_01.pdf` PUA→OCR-fallback **przez endpoint**: treść poprawna, 0 PUA,
 `ocr_used=true`). Powtórzenie: `docker compose up -d fastapi` + `pytest`.
+
+### Plan kroku 2.4 — czysta summaryzacja (rozbicie na podkroki)
+
+Realizuje krok 4 z listy „Kroki". Buduje na `LLMClient` z 2.2 (transport/generacja **już
+gotowy** — „wiadomości → tekst + zużycie") i na zasadzie transport-vs-domena. **Wejście =
+tekst** (nie plik), więc endpoint jest testowalny niezależnie od ekstrakcji. Domyślny
+dostawca dev/test = `FakeLLMClient` (offline — bez kosztów, nic nie wychodzi na zewnątrz,
+spójne z „prywatność pierwsza").
+
+**Architektura (analogia do ekstrakcji — transport vs domena):**
+- **`LLMClient` (transport/generacja, 2.2)** — wymienialny silnik (`fake`/`openai`/…→Bielik),
+  budowany przez **fabrykę** `get_llm_client()`. Nie zna promptów summaryzacji (świadomie,
+  z 2.2). NIE ruszamy.
+- **`SummarizationService` (domena)** — NOWA klasa, pakiet `api/app/summarization/`
+  (symetrycznie do `extraction/`). Składa prompt (system + szablon z tekstem), pilnuje
+  truncacji wejścia, woła `LLMClient`, zwraca streszczenie + metadane. To ona zna prompty.
+  Czyste fragmenty (budowa wiadomości, truncacja, metadane) wydzielone do helperów —
+  testowalne bez LLM; w metodzie async `summarize` zostaje samo I/O + złożenie.
+
+> Kontrast DI względem ekstrakcji: `ExtractionService` dostaje `TikaClient` **inline** (Tika
+> = jeden silnik). `SummarizationService` dostaje `LLMClient` z **fabryki** `get_llm_client()`
+> — bo LLM jest wymienialny (to cała idea abstrakcji dostawcy).
+
+**Decyzje (rozstrzygnięte przy implementacji 2.4):**
+
+- **[ROZSTRZYGNIĘTE — produktowe] Kształt promptu = HYBRYDA.** System prompt po polsku, rola =
+  asystent robiący streszczenie pisma **pod dekretację**; format narzucony: krótki akapit +
+  wypunktowanie kluczowych elementów (typ pisma, nadawca, czego dotyczy, termin, akcja — TYLKO
+  te obecne w piśmie, bez zmyślania), zwracane jako **JEDEN string `summary`** (bez JSON/
+  parsowania). Prompt to **logika, nie sekret** → w kodzie (`_SYSTEM_PROMPT` w `service.py`),
+  nie w ENV. `temperature=0.0` (domyślne w `LLMClient`).
+- **[ROZSTRZYGNIĘTE] Truncacja wejścia.** Próg `LLM_MAX_INPUT_CHARS` (`Settings`/ENV), liczony
+  w **znakach** (odporne na zmianę modelu/tokenizera). Tekst dłuższy → **pierwsze N znaków**
+  (początek, nie chunking) + log + metadana `truncated`. Default **90 000** — spójnie z
+  `MAX_OCR_PAGES=30` (~3000 znaków/stronę); pod mniejszy model (Bielik) obniżyć (README →
+  „Spójność limitów pipeline'u"). To **truncacja pod okno modelu** — co innego niż limit stron 2.3.5.
+- **[ROZSTRZYGNIĘTE] Kontrakt I/O.** `SummarizeRequest = {text}`; `SummarizeResponse =
+  {summary, metadata}`, metadane: `model`, `input_chars` (po strip), `truncated`, `usage`
+  (`LLMUsage` z `app.llm` — reuse, leaf value object). Modele API **odrębne** od domenowych.
+  Pusty/sam-whitespace tekst → `EmptyInputError` → 422.
+- **[ROZSTRZYGNIĘTE] Mapowanie `LLMError` → HTTP.** `EmptyInputError`/brak `text` → **422**;
+  `LLMConfigError`/`LLMAuthError` → **500** (nasz config serwera); `LLMRateLimitError` → **503**;
+  `LLMTimeoutError` → **504**; `LLMResponseError`/bazowy `LLMError` → **502**.
+
+**Podkroki (od części do całości; każdy z testami — marker `integration_fastapi`/`integration_llm` + jednostkowe):**
+
+**2.4.1 — `SummarizationService` (domena). [ZROBIONE i ZWERYFIKOWANE]** Pakiet
+`api/app/summarization/`. Kontrakt: `tekst → streszczenie + metadane`, przez wstrzyknięty
+`LLMClient`. Czyste helpery (bez sieci/LLM): `_build_user_message` (szablon usera; system
+prompt to stała `_SYSTEM_PROMPT`), `_truncate` (przycięcie + flaga), `_build_metadata`. Async
+`summarize` = I/O (`LLMClient.complete`) + złożenie. Wyjątki LLM propagują (mapuje endpoint w
+2.4.2). Testy: jednostkowe na helperach + na `FakeLLMClient` i nagrywającej atrapie (sprawdza,
+co leci do LLM: system prompt, `max_tokens`, tekst w userze; determinizm, działanie truncacji).
+
+**2.4.2 — Modele I/O + endpoint `POST /summarize`. [ZROBIONE i ZWERYFIKOWANE]** `models.py`: `SummarizeRequest`/
+`SummarizeResponse` (+ `from_result`). Router `api/app/routers/summarize.py`: DI
+`SummarizationService` nad `get_llm_client()` (fabryka z 2.2). Mapowanie `LLMError` → kody
+HTTP (jak wyżej). Rejestracja w `main.py`. Testy: jednostkowe (`TestClient` +
+`dependency_overrides`, atrapa serwisu/Fake — mapowanie kodów) + integracyjne
+(`integration_fastapi` z `FakeLLMClient`; opcjonalnie `integration_llm` z realnym OpenAI,
+koszt minimalny `max_tokens` mały).
+
+**2.4.3 — Config + dokumentacja. [ZROBIONE i ZWERYFIKOWANE]** `LLM_MAX_INPUT_CHARS` w `Settings` + `.env.example`;
+sekcja `POST /summarize` w README (wejście/wyjście/kody błędów + przykład `curl`);
+aktualizacja checklisty. Spójność progu z limitami ekstrakcji (README → „Spójność limitów
+pipeline'u").
+
+**Świadomie poza 2.4** (patrz „Świadomie pominięte"): chunking/map-reduce długich dokumentów
+(na teraz truncacja), tokenowo-dokładny licznik (na teraz znaki), streaming odpowiedzi, cache.
+Pełny pipeline (upload → ekstrakcja → streszczenie) spina dopiero **krok 2.5**.
+
+**Weryfikacja całości 2.4 (2.4.1–2.4.3) — przeszła (2026-06-21):** `pytest` → **119 PASSED**
+(było 99; +20). Jednostkowe: `test_summarization_service.py` (helpery + orkiestracja na
+nagrywającej atrapie/`FakeLLMClient`), `test_fastapi_summarize.py` (router: happy + 422 +
+mapowanie 500/502/503/504 na atrapie serwisu — bez sieci). Integracyjne: **oba** poziomy
+(symetrycznie do ekstrakcji) — `integration_llm` `tests/integration/test_summarization_service.py`
+(`SummarizationService` nad **realnym OpenAI**: prompt hybrydowy dał poprawne polskie
+streszczenie, `usage`/`model` realnie wypełnione; skip bez `openai`+klucza) oraz
+`integration_fastapi` `tests/integration/test_fastapi_summarize.py` (endpoint przez kontener —
+kontrakt provider-agnostyczny; działa z `fake` darmowo/deterministycznie i z `openai` realnie).
+
+**Bug znaleziony i naprawiony przy 2.4 (pusty `LLM_BASE_URL`):** endpoint w kontenerze zwracał
+502 „Connection error", a `integration_llm` (in-process na hoście) działał — różnica NIE była
+brakiem sieci (kontener ma pełną łączność: TCP/TLS/`AsyncOpenAI` OK), tylko: `docker-compose`
+ma `LLM_BASE_URL: "${LLM_BASE_URL:-}"` → do kontenera trafia **pusty string `""`** (nie brak
+zmiennej); pydantic czytał `llm_base_url=""`, fabryka przekazywała `AsyncOpenAI(base_url="")` →
+`APIConnectionError`. Host budował klienta z `.env` (brak klucza `LLM_BASE_URL` → `None`), stąd
+działał. Fix: walidator w `Settings` (`_puste_na_none`) normalizuje pusty/biały ENV pól
+opcjonalnych (`llm_api_key`/`llm_base_url`/`llm_model`) na `None` (test
+`test_puste_env_opcjonalne_na_none`). Po fixie `/summarize` na kontenerze z `openai` zwraca
+realne streszczenie. Powtórzenie: `docker compose up -d fastapi` + `pytest`.
+
+### Plan kroku 2.5 — pełny pipeline (rozbicie na podkroki)
+
+Realizuje krok 5 z listy „Kroki": spina 2.3 (ekstrakcja) i 2.4 (summaryzacja) w JEDNO
+wywołanie — **plik → tekst → streszczenie**. To docelowy endpoint pod integrację z DOKUS
+(krok 3): ESOD wysyła oryginał, dostaje zwrotnie podsumowanie. **Nie wprowadza nowej logiki
+domenowej — KOMPONUJE istniejące serwisy.** Domyka KROK 2 (API na FastAPI).
+
+**Architektura (kompozycja, nie nowa logika):**
+- `ExtractionService` (2.3) i `SummarizationService` (2.4) — gotowe, NIE ruszamy.
+- **`PipelineService` (orkiestrator)** — NOWA cienka klasa (pakiet `api/app/pipeline/`),
+  dostaje OBA serwisy wstrzyknięte; `process(data, content_type, filename) -> PipelineResult`
+  = `extract` → weź `result.text` → `summarize` → złóż metadane obu etapów. Symetria do
+  `ExtractionService` komponującego `PdfPageLimiter`+`PuaDetector`. **Bez własnego I/O** — całe
+  I/O jest w serwisach składowych; tu tylko sekwencja + złożenie wyniku.
+
+> DI: router buduje `PipelineService` nad `ExtractionService` (`TikaClient` inline) +
+> `SummarizationService` (`LLMClient` z fabryki) — łączy wzorce DI z `/extract` i `/summarize`.
+
+**Decyzje wejściowe (propozycje — do potwierdzenia przy starcie 2.5):**
+
+- **[ROZSTRZYGNIĘTE] Nazwa endpointu = `POST /extract-and-summarize`** (opisowa: robi oba
+  etapy; odróżnia od `/extract` i `/summarize`, które robią po jednym).
+- **[ROZSTRZYGNIĘTE] Kształt odpowiedzi = `summary` + `text` + metadane obu etapów,
+  ZAGNIEŻDŻONE.** `{ summary, text, extraction: {content_type, language, char_count,
+  word_count, ocr_used, pages_total, pages_processed, ocr_truncated}, summarization: {model,
+  input_chars, truncated, usage} }`. `text` = PEŁNY wyekstrahowany tekst (przed truncacją pod
+  LLM — `summarization.truncated` mówi, czy model widział tylko część). Zagnieżdżenie reużywa
+  wprost `ExtractMetadata` + `SummarizeMetadata` i unika kolizji `char_count` (ekstrakcja) vs
+  `input_chars` (summaryzacja). Modele API odrębne; mapowanie z `PipelineResult`.
+- **[PROPOZYCJA] Wejście = base64 w JSON** (jak `/extract`): `content_base64` + opcjonalne
+  `filename`/`content_type`.
+- **[PROPOZYCJA] Mapowanie błędów = UNIA `/extract` + `/summarize`:** zły base64 / pusty plik /
+  `TikaExtractionError` / `EmptyExtractionError` / `EmptyInputError` → **422**; za duży → **413**;
+  `TikaUnavailableError` → **502**; `LLMTimeoutError` → **504**; `LLMRateLimitError` → **503**;
+  `LLMConfigError`/`LLMAuthError` → **500**; `LLMResponseError`/`LLMError` → **502**.
+- **[UWAGA] Spójność limitów.** Pipeline przepuszcza dokument przez WSZYSTKIE trzy bramki naraz
+  (`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS`) — tu „Spójność limitów
+  pipeline'u" (README) jest najważniejsza w praktyce. **Bez nowych ENV** (reuse). Latencja: OCR
+  (do `tika_timeout`) + LLM (do `llm_timeout`) sekwencyjnie — **sync**; async/kolejka świadomie
+  odłożone.
+
+**Podkroki (od części do całości; każdy z testami):**
+
+**2.5.1 — `PipelineService` (orkiestrator).** Pakiet `api/app/pipeline/`. `process(...)` komponuje
+extract→summarize (przekazuje `extraction.text` jako wejście summaryzacji); `PipelineResult` =
+`summary` + `text` (pełny) + metadane obu etapów. Złożenie metadanych w czystym helperze.
+Testy: jednostkowe z ATRAPAMI obu serwisów — kolejność wywołań, przekazanie `text` z extract do
+summarize, złożenie wyniku, propagacja wyjątków obu warstw (mapuje endpoint w 2.5.2).
+
+**2.5.2 — Modele I/O + endpoint.** `models.py`: `SummarizeDocumentRequest`/`...Response`
+(+ `from_result`). Router `api/app/routers/pipeline.py`: DI obu serwisów, mapowanie błędów = unia
+(jak wyżej). Rejestracja w `main.py`. Testy: jednostkowe (`TestClient` + `dependency_overrides`,
+atrapa pipeline'u — mapowanie kodów obu warstw, bez sieci) + integracyjne (`integration_fastapi`
+na `fake` — kontrakt end-to-end przez kontener; realny przebieg pokrywają już `integration_tika`/
+`integration_llm` na warstwach niżej).
+
+**2.5.3 — Dokumentacja.** Sekcja `POST /extract-and-summarize` w README (wejście/wyjście/kody +
+`curl`), aktualizacja checklisty (po 2.5 cały **krok 2** zamknięty), odsyłacz do „Spójność
+limitów pipeline'u". Bez nowego configu (reuse istniejących limitów).
+
+**Świadomie poza 2.5** (patrz „Świadomie pominięte"): async przez kolejkę (RabbitMQ),
+uwierzytelnianie API, monitoring, streaming odpowiedzi, chunking. To domyka **krok 2**; dalej
+**krok 3** (integracja z DOKUS) konsumuje ten endpoint.
 
 ### Przekrojowe (dotyczą wszystkich endpointów)
 

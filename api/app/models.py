@@ -13,6 +13,8 @@ from typing   import Literal
 from pydantic import BaseModel, Field
 
 from app.extraction import ExtractionResult
+from app.llm import LLMUsage
+from app.summarization import SummarizationResult
 
 # Status pojedynczej zaleznosci zewnetrznej (np. Tiki).
 DependencyStatus = Literal["ok", "unreachable"]
@@ -108,5 +110,58 @@ class ExtractResponse(BaseModel):
                 pages_total     = meta.pages_total,
                 pages_processed = meta.pages_processed,
                 ocr_truncated   = meta.ocr_truncated,
+            ),
+        )
+
+
+# --- Summaryzacja: POST /summarize (krok 2.4.2) ----------------------------------
+
+
+class SummarizeRequest(BaseModel):
+    """Wejscie `POST /summarize` — czysta summaryzacja: sam tekst (bez pliku/ekstrakcji)."""
+
+    text: str = Field(description="Tekst dokumentu do streszczenia.")
+
+
+class SummarizeMetadata(BaseModel):
+    """Metadane w odpowiedzi /summarize — odbicie `SummarizationMetadata` z domeny na granicy HTTP."""
+
+    model: str       = Field(description="Identyfikator modelu, ktory odpowiedzial, np. 'gpt-4o-mini'/'fake-echo'.")
+    input_chars: int = Field(description="Dlugosc wejscia (po strip), w znakach — PRZED ewentualna truncacja.")
+    truncated: bool  = Field(default=False, description="Czy wejscie ucieto do limitu (streszczenie z czesci dokumentu).")
+    usage: LLMUsage  = Field(default_factory=LLMUsage, description="Zuzycie tokenow (prompt/completion/total) — diagnostyka kosztu.")
+
+
+class SummarizeResponse(BaseModel):
+    """Wyjscie `POST /summarize` — streszczenie (hybryda: akapit + punkty) + metadane."""
+
+    summary: str               = Field(description="Streszczenie dokumentu (jeden tekst).")
+    metadata: SummarizeMetadata = Field(description="Metadane: model, dlugosc wejscia, truncacja, zuzycie.")
+
+    @classmethod
+    def from_result(
+        cls,
+        result: SummarizationResult,   # domenowy wynik z SummarizationService.summarize
+    ) -> SummarizeResponse:
+        """Opis metody:
+        Zmapuj domenowy `SummarizationResult` na model odpowiedzi HTTP. Cienkie, jawne
+        przepisanie pol — granica miedzy domena a kontraktem API.
+
+        Przyklad argumentow:
+            result=SummarizationResult(summary="...", metadata=SummarizationMetadata(
+                model="gpt-4o-mini", input_chars=812, truncated=False, usage=LLMUsage(...)))
+
+        Przyklad wyniku:
+            SummarizeResponse(summary="...", metadata=SummarizeMetadata(
+                model="gpt-4o-mini", input_chars=812, truncated=False, usage=LLMUsage(...)))
+        """
+        meta = result.metadata
+        return cls(
+            summary  = result.summary,
+            metadata = SummarizeMetadata(
+                model       = meta.model,
+                input_chars = meta.input_chars,
+                truncated   = meta.truncated,
+                usage       = meta.usage,
             ),
         )

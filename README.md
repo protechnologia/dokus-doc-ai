@@ -15,8 +15,14 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
      3. [x] `POST /extract` — wejście base64 (JSON), wyjście tekst + metadane, mapowanie błędów na kody HTTP
      4. [x] Config (`MAX_UPLOAD_BYTES`) + dokumentacja `POST /extract`
      5. [x] Jakość ekstrakcji — detekcja PUA + OCR-fallback + limit stron (`MAX_OCR_PAGES`)
-  4. [ ] API: czysta summaryzacja
+  4. [x] API: czysta summaryzacja
+     1. [x] `SummarizationService` — domena: system prompt + szablon + truncacja + wołanie `LLMClient`
+     2. [x] `POST /summarize` — wejście tekst, wyjście streszczenie + metadane, mapowanie `LLMError` → HTTP
+     3. [x] Config (`LLM_MAX_INPUT_CHARS`) + dokumentacja
   5. [ ] API: pełny pipeline
+     1. [ ] `PipelineService` — orkiestrator: ekstrakcja → streszczenie (kompozycja serwisów)
+     2. [ ] `POST /extract-and-summarize` — wejście base64, wyjście streszczenie + metadane obu etapów, mapowanie błędów (unia)
+     3. [ ] Dokumentacja (sekcja endpointu + przykład)
 - [ ] Krok 3 — integracja z DOKUS
 - [ ] Krok 4 — migracja LLM na RunPod
 - [ ] Krok 5 — migracja LLM na własną maszynę
@@ -63,6 +69,7 @@ Ustawienia **aplikacji** (`Settings`):
 | `LLM_MODEL` | — | Nazwa modelu, np. `gpt-4o-mini` (wymagana dla `openai`). |
 | `LLM_BASE_URL` | — | Opcjonalny własny endpoint zgodny z API OpenAI (`.../v1`). |
 | `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
+| `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` (strażnik okna kontekstu). Powyżej → pierwsze N znaków + metadana `truncated`. Spójny z `MAX_OCR_PAGES`. |
 
 ## API
 
@@ -198,6 +205,67 @@ Endpoint nie jest „głupim proxy" do Tiki — pilnuje zasobów i jakości wyni
   **wymusza OCR** (`ocr_only`) na tym samym pliku, zwracając czytelną treść; w metadanych
   `ocr_used: true`.
 
+### `POST /summarize`
+
+Czysta summaryzacja: wejściem jest **sam tekst** (bez pliku — ekstrakcja to osobny endpoint).
+Serwis składa polski prompt pod osobę dekretującą, woła model przez `LLMClient` i zwraca
+streszczenie. Domyślny dostawca to `fake` (offline, nic nie wychodzi na zewnątrz); realny
+model włączasz przez `LLM_PROVIDER=openai` (+ klucz).
+
+Wejście (`SummarizeRequest`):
+
+| Pole | Wymagane | Opis |
+|---|---|---|
+| `text` | tak | Tekst dokumentu do streszczenia. |
+
+Przykładowe żądanie:
+
+```json
+{
+  "text": "Urząd Skarbowy w Krakowie wzywa Jana Kowalskiego do zapłaty zaległości w podatku od nieruchomości za 2025 r. w kwocie 1 240 zł w terminie 14 dni od doręczenia pisma, pod rygorem egzekucji."
+}
+```
+
+Wyjście (`SummarizeResponse`) — streszczenie (**hybryda: krótki akapit + wypunktowane
+kluczowe elementy**) jako jeden tekst + metadane:
+
+```json
+{
+  "summary": "Urząd Skarbowy wzywa do zapłaty zaległego podatku...\n\n• Typ: wezwanie do zapłaty\n• Nadawca: Urząd Skarbowy w Krakowie\n• Termin: 14 dni od doręczenia\n• Akcja: opłata lub odwołanie",
+  "metadata": {
+    "model": "gpt-4o-mini",
+    "input_chars": 812,
+    "truncated": false,
+    "usage": { "prompt_tokens": 250, "completion_tokens": 90, "total_tokens": 340 }
+  }
+}
+```
+
+Metadane: `model` (kto odpowiedział), `input_chars` (długość wejścia po `strip`), `truncated`
+(czy tekst ucięto do `LLM_MAX_INPUT_CHARS`), `usage` (zużycie tokenów — diagnostyka kosztu).
+
+Kody błędów:
+
+| Kod | Kiedy |
+|---|---|
+| `422` | Puste wejście (sam whitespace) lub brak pola `text`. |
+| `500` | Błędna konfiguracja dostawcy LLM / zły klucz (nasz config serwera). |
+| `502` | Inny błąd po stronie dostawcy / nieoczekiwana odpowiedź. |
+| `503` | Dostawca dławi (limit zapytań / kwota). |
+| `504` | Dostawca nie odpowiedział w czasie (timeout). |
+
+Wywołanie:
+
+```bash
+curl -X POST http://localhost:8000/summarize \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Urząd Skarbowy wzywa do zapłaty zaległości podatkowej w terminie 14 dni..."}'
+```
+
+> Długie wejście jest **ucinane** do `LLM_MAX_INPUT_CHARS` znaków (truncacja pod okno modelu,
+> z metadaną `truncated`) — to co innego niż limit stron ekstrakcji (`MAX_OCR_PAGES`). Oba
+> limity warto trzymać spójnie: patrz „Spójność limitów pipeline'u”.
+
 ## Testy
 
 ### Szybki sprawdzian ręczny
@@ -234,3 +302,83 @@ nie jest `openai` lub brak klucza.
 
 > Adresy usług w testach integracyjnych nadpiszesz przez `TIKA_URL` (domyślnie
 > `http://localhost:9998`) i `FASTAPI_URL` (domyślnie `http://localhost:8000`).
+
+## Typowe procedury
+
+### Zmiana modelu komercyjnego (OpenAI) na lokalny Bielik
+
+Cel projektu to docelowo **żadne dane nie opuszczają urzędu** — stąd plan przejścia
+komercyjne API → Bielik na RunPod → Bielik on-prem. Z założenia jest to **zmiana
+konfiguracji `LLMClient`, nie logiki biznesowej** (zasada „abstrakcja dostawcy LLM" z
+[CLAUDE.md](CLAUDE.md)). Ollama wystawia API **zgodne z OpenAI** (`/v1`), więc na happy
+path wystarcza istniejący `OpenAILLMClient` z innym `LLM_BASE_URL` — bez nowego klienta.
+
+> Uwaga: kontener `llm` (Ollama + Bielik) dochodzi w **fazach 4–5**, a `LLM_MAX_INPUT_CHARS`
+> w **kroku 2.4** (summaryzacja). Poniższe kroki to docelowy runbook — elementy oznaczone
+> *[planowane]* nie są jeszcze w repo.
+
+1. **Postaw Bielika lokalnie (Ollama).** *[planowane: usługa `llm` w `docker-compose`]*
+   ```bash
+   ollama pull SpeakLeash/bielik-11b-v2.2-instruct   # albo nowszy wariant v2.x / v3
+   ollama serve                                       # wystawia http://localhost:11434
+   ```
+
+2. **Przełącz dostawcę przez ENV** (w `.env`) — bez ruszania kodu:
+   ```env
+   LLM_PROVIDER=openai                                  # OpenAILLMClient (Ollama jest OpenAI-compat)
+   LLM_BASE_URL=http://llm:11434/v1                     # endpoint Ollamy (.../v1); na hoście: http://localhost:11434/v1
+   LLM_MODEL=SpeakLeash/bielik-11b-v2.2-instruct        # tag modelu z Ollamy
+   LLM_API_KEY=ollama                                   # dowolny niepusty — SDK wymaga, Ollama ignoruje
+   ```
+
+3. **Dostosuj próg truncacji wejścia `LLM_MAX_INPUT_CHARS`.** *[ustawienie z kroku 2.4]*
+   Bielik ma **4× mniejsze okno kontekstu** niż `gpt-4o-mini` (32k vs 128k tokenów — patrz
+   tabela niżej), więc próg liczony w **znakach** trzeba obniżyć i ustawić **pod najmniejszy
+   docelowy model**, zostawiając zapas na system prompt + samą odpowiedź. Inaczej po
+   migracji pipeline zacznie ucinać/wywalać się na dokumentach, które wcześniej przechodziły.
+   ```env
+   # orientacyjnie dla Bielika (~32k tok.): rzędu kilkudziesięciu tys. znaków (np. 50000),
+   # z zapasem na prompt i wyjście. Dla gpt-4o-mini mogło być znacznie więcej.
+   LLM_MAX_INPUT_CHARS=50000
+   ```
+
+4. **Restart i weryfikacja:**
+   ```bash
+   docker compose up -d
+   curl http://localhost:8000/health                  # API żyje
+   # smoke summaryzacji (gdy /summarize gotowe w kroku 2.4)
+   ```
+
+**Okna kontekstu — strony A4** (przyjmując ~800 tokenów/stronę po polsku; realnie 750–1000):
+
+| Model | Okno (tokeny) | ~strony A4 (PL) | Uwaga |
+|---|---:|---:|---|
+| **gpt-4o-mini** | 128 000 | ~160 | obecny domyślny (dev) |
+| gpt-4o | 128 000 | ~160 | |
+| gpt-4.1 / -mini / -nano | 1 047 576 | ~1 300 | okno 1M |
+| o3 / o3-mini | 200 000 | ~250 | modele „reasoning" |
+| gpt-3.5-turbo | 16 385 | ~20 | starszy |
+| **Bielik-11B-v2.x** | 32 768 | ~40 | cel on-prem (Ollama) |
+| Bielik-7B v1 | 4 096 | ~5 | starsza wersja |
+
+> „Strony" = **całe** okno (wejście + system prompt + odpowiedź). Użyteczne wejście pod
+> dokument jest mniejsze — stąd `LLM_MAX_INPUT_CHARS` z zapasem. Strona gęsta (tabele,
+> pisma prawnicze) zje więcej tokenów niż luźny tekst.
+
+#### Spójność limitów pipeline'u
+
+`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS` to trzy bramki na kolejnych
+etapach **tego samego dokumentu** (upload → ekstrakcja → streszczenie). Warto trzymać je w
+jednym rzędzie wielkości — inaczej jeden etap robi pracę, którą następny i tak utnie:
+
+- **Strony ↔ znaki.** ~1 strona A4 ≈ ~3000 znaków, więc `MAX_OCR_PAGES` stron daje
+  ~`MAX_OCR_PAGES × 3000` znaków tekstu. Jeśli to **dużo więcej** niż `LLM_MAX_INPUT_CHARS`,
+  OCR-ujemy (kosztownie) strony, których LLM i tak nie zobaczy — wtedy albo obniż
+  `MAX_OCR_PAGES`, albo podnieś `LLM_MAX_INPUT_CHARS`. Przykład: `LLM_MAX_INPUT_CHARS=50000`
+  ≈ ~17 stron, więc przy `MAX_OCR_PAGES=30` marnujemy OCR ~13 stron.
+- **Rozmiar ↔ strony.** `MAX_UPLOAD_BYTES` powinien wygodnie pomieścić dokument o
+  `MAX_OCR_PAGES` stronach (skan bywa kilka MB) — inaczej odrzucasz pliki **zanim** limit
+  stron w ogóle zadziała.
+
+Przy migracji na Bielika (mniejsze okno → mniejszy `LLM_MAX_INPUT_CHARS`) zwykle **w dół**
+idzie też `MAX_OCR_PAGES`, żeby etapy zostały spójne.

@@ -55,3 +55,17 @@ def test_unknown_env_ignored(monkeypatch):
 
     s = Settings(_env_file=None)  # nie powinno rzucic
     assert s.tika_url == "http://localhost:9998"
+
+
+def test_puste_env_opcjonalne_na_none(monkeypatch):
+    """Pusty/bialy ENV pol opcjonalnych -> None (docker-compose `${VAR:-}` wstawia ""), by
+    np. base_url="" nie trafil do AsyncOpenAI (APIConnectionError)."""
+    _clear_env(monkeypatch)
+    monkeypatch.setenv("LLM_BASE_URL", "")        # tak robi docker-compose dla niezdefiniowanej zmiennej
+    monkeypatch.setenv("LLM_API_KEY", "   ")      # sam whitespace tez = brak
+    monkeypatch.setenv("LLM_MODEL", "")
+
+    s = Settings(_env_file=None)
+    assert s.llm_base_url is None
+    assert s.llm_api_key is None
+    assert s.llm_model is None

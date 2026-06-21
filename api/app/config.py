@@ -7,6 +7,7 @@ Dostawce LLM przelaczamy konfiguracja, nie edycja logiki biznesowej
 
 from functools import lru_cache
 
+from pydantic          import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +53,37 @@ class Settings(BaseSettings):
     llm_base_url: str | None = None      # opcjonalny wlasny endpoint zgodny z API OpenAI (.../v1)
     llm_model: str | None = None         # wymagany dla 'openai', np. "gpt-4o-mini"
     llm_timeout_seconds: float = 60.0    # timeout wolania LLM [s]
+
+    # --- Summaryzacja (domena: app.summarization, krok 2.4) ---
+    # Strażnik okna kontekstu modelu: górny limit ZNAKÓW tekstu wysyłanego do LLM. Powyżej —
+    # bierzemy pierwsze N znaków + log + metadana `truncated` (truncacja POD OKNO MODELU, co
+    # innego niż MAX_OCR_PAGES z ekstrakcji). Liczony w znakach (odporny na zmianę modelu/
+    # tokenizera). Domyślnie 90 000 — spójnie z MAX_OCR_PAGES=30 (~3000 znaków/stronę); pod
+    # mniejszy model (Bielik, ~32k tok.) obniżyć (patrz README → „Spójność limitów pipeline'u").
+    llm_max_input_chars: int = 90_000
+
+    @field_validator("llm_api_key", "llm_base_url", "llm_model", mode="before")
+    @classmethod
+    def _puste_na_none(
+        cls,
+        v: object,   # surowa wartosc pola opcjonalnego (str z ENV, None, itp.)
+    ) -> object:
+        """Opis metody:
+        Pusty/bialy string z ENV traktuj jak BRAK -> None. Krytyczne dla `docker-compose`,
+        ktory dla niezdefiniowanych zmiennych wstawia PUSTY string (`${LLM_BASE_URL:-}` ->
+        `LLM_BASE_URL=""`), a nie pomija zmienną. Bez tego np. `llm_base_url=""` trafia do
+        `AsyncOpenAI(base_url="")` i wywraca wywolanie (`APIConnectionError`). Dotyczy pol
+        opcjonalnych (`str | None`); nie-stringi przepuszczamy bez zmian.
+
+        Przyklad argumentow:
+            v=""      (albo "  ")
+
+        Przyklad wyniku:
+            None      (dla niepustego stringa zwraca go bez zmian)
+        """
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
 
 
 @lru_cache

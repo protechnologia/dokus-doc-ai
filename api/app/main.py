@@ -1,8 +1,8 @@
 """Punkt wejscia FastAPI.
 
-Endpointy: /health (krok 2.1), POST /extract (krok 2.3). Summaryzacja i pelny pipeline
-dochodza w 2.4-2.5. Minimalne logowanie z request-id (przekrojowe) — to NIE monitoring
-(Zabbix odlozony).
+Endpointy: /health (krok 2.1), POST /extract (krok 2.3), POST /summarize (krok 2.4). Pelny
+pipeline (ekstrakcja -> streszczenie) dochodzi w 2.5. Minimalne logowanie z request-id
+(przekrojowe) — to NIE monitoring (Zabbix odlozony).
 """
 
 import logging
@@ -11,7 +11,7 @@ import uuid
 from fastapi import FastAPI, Request
 
 from app import __version__
-from app.routers import extract, health
+from app.routers import extract, health, summarize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,3 +45,4 @@ async def request_id_logging(request: Request, call_next):
 
 app.include_router(health.router)
 app.include_router(extract.router)
+app.include_router(summarize.router)
