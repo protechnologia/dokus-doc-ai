@@ -4,20 +4,17 @@ To domyka dawne `[DO UZUPELNIENIA]`: klasyfikator `_map_sdk_error` zamienia wyja
 SDK `openai` na nasze domenowe `LLMError`. Sprawdzamy kazda galaz BEZ sieci i BEZ
 mocka klienta — wystarczy zbudowac instancje wyjatkow SDK i podac je wprost.
 
-W odroznieniu od `test_llm_openai.py` ten plik POTRZEBUJE biblioteki `openai`
-(tworzymy jej typy wyjatkow). Gdy nie jest zainstalowana -> SKIP, nie fail.
+W odroznieniu od `test_llm_openai.py` ten plik POTRZEBUJE biblioteki `openai` (tworzymy
+jej typy wyjatkow) — to zadeklarowana zaleznosc runtime (`api/requirements.txt`), wiec
+importujemy ja wprost (bez `importorskip`): jej brak to blad instalacji, nie skip.
 """
 
 import httpx
-import pytest
 
-# Klasyfikator uzywa typow wyjatkow z SDK -> bez biblioteki nie ma czego testowac.
-pytest.importorskip("openai", reason="openai nie zainstalowany — pip install -r api/requirements.txt")
+from openai import APIError, APITimeoutError, AuthenticationError, PermissionDeniedError, RateLimitError
 
-from openai import APIError, APITimeoutError, AuthenticationError, PermissionDeniedError, RateLimitError  # noqa: E402
-
-from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError  # noqa: E402
-from app.llm.client_openai import OpenAILLMClient  # noqa: E402
+from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError
+from app.llm.client_openai import OpenAILLMClient
 
 # Wspolne, sztuczne zadanie/odpowiedz HTTP — wyjatki SDK wymagaja ich w konstruktorze.
 _REQ = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")

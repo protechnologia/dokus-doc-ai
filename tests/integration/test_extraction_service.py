@@ -12,19 +12,32 @@ Gdy Tika niedostepna -> SKIP (fixture `tika_url`), nie fail. `extract` jest asyn
 
 import asyncio
 import io
+import os
 
+import docx
 import pytest
+from PIL import Image, ImageDraw, ImageFont
 
 from app.extraction import ExtractionResult, ExtractionService, TikaClient
 
 # Parasol `integration` + wezszy `integration_tika` (uderzamy w kontener Tika).
 pytestmark = [pytest.mark.integration, pytest.mark.integration_tika]
 
+# Fonty z polskimi glifami (jak w test_fastapi_extract.py) — pod render stron do OCR.
+_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+]
+
+
+def _find_font() -> str | None:
+    return next((p for p in _FONT_CANDIDATES if os.path.exists(p)), None)
+
 
 def test_extract_docx_przez_serwis(tika_url):
     """DOCX -> ExtractionService: tekst znormalizowany (polskie znaki) + policzone metadane."""
-    docx = pytest.importorskip("docx", reason="python-docx nie zainstalowany")
-
     document = docx.Document()
     document.add_paragraph("Zażółć gęślą jaźń")
     buf = io.BytesIO()
@@ -75,8 +88,6 @@ def test_extract_jezyk_z_wlasciwosci_docx(tika_url):
     Tika wystawia go jako `dc:language`, a `_pick_language` go podchwytuje (czego atrapa
     nie zweryfikuje — to zalozenie o realnym kluczu metadanej).
     """
-    docx = pytest.importorskip("docx", reason="python-docx nie zainstalowany")
-
     document = docx.Document()
     document.core_properties.language = "pl"   # jezyk w wlasciwosciach dokumentu -> dc:language
     document.add_paragraph("Pismo do dekretacji w sprawie podatku.")
@@ -87,3 +98,51 @@ def test_extract_jezyk_z_wlasciwosci_docx(tika_url):
     result = asyncio.run(service.extract(data=buf.getvalue()))
 
     assert result.metadata.language == "pl"
+
+
+def _make_scan_pdf(pages_text: list[str], font_path: str) -> bytes:
+    """Zbuduj PDF OBRAZOWY (bez warstwy tekstowej): kazda strona to render slowa do obrazu.
+
+    Taki PDF MUSI przejsc przez OCR (auto go zOCR-uje) — idealny do testu limitu stron:
+    OCR jest kosztowny, wiec wlasnie jego dotyczy `MAX_OCR_PAGES`.
+    """
+    font = ImageFont.truetype(font_path, 80)
+    images = []
+    for text in pages_text:
+        img = Image.new("RGB", (1000, 300), "white")
+        ImageDraw.Draw(img).text((40, 100), text, fill="black", font=font)
+        images.append(img)
+    buf = io.BytesIO()
+    # Wielostronicowy PDF z obrazow (save_all + append_images) — strony to czyste skany.
+    images[0].save(buf, format="PDF", save_all=True, append_images=images[1:])
+    return buf.getvalue()
+
+
+def test_extract_limit_stron_tnie_skan_pdf(tika_url):
+    """Skan PDF wielostronicowy + `max_ocr_pages=1` -> OCR tylko 1. strony; limit w metadanych.
+
+    Dowodzi straznika zasobow (krok 2.3.5, strategia B "limit PRZED auto") na realnej Tice:
+    3-stronicowy PDF obrazowy z limitem 1 ma wyekstrahowac tylko tresc strony 1 (bo do Tiki
+    poszla tylko ona), a metadane maja NIE CICHO zaraportowac ciecie (1 z 3 stron).
+    """
+    font_path = _find_font()
+    if not font_path:
+        pytest.skip("Brak fontu TTF z polskimi glifami (np. DejaVuSans) — pomijam OCR.")
+
+    # Trzy odrebne, latwe do OCR slowa — po jednym na strone.
+    pdf = _make_scan_pdf(["Pierwsza", "Druga", "Trzecia"], font_path)
+
+    # Limit 1 strona: do Tiki ma trafic tylko strona 1 (reszta uciecie PRZED ekstrakcja).
+    service = ExtractionService(TikaClient(base_url=tika_url), max_ocr_pages=1)
+    result = asyncio.run(service.extract(data=pdf, content_type="application/pdf"))
+
+    # Asercje na RDZENIACH slow — odporne na typowe pomylki OCR (np. "Pierwsza"->"Plerwsza").
+    low = result.text.lower()
+    assert "rwsza" in low                               # strona 1 ("pierwsza") zOCR-owana
+    assert "rug" not in low                             # strona 2 ("druga") NIE poszla (ucieta)
+    assert "rzeci" not in low                           # strona 3 ("trzecia") j.w.
+    # Limit nie cichy: diagnostyka stron w metadanych.
+    assert result.metadata.pages_total == 3
+    assert result.metadata.pages_processed == 1
+    assert result.metadata.ocr_truncated is True
+    assert result.metadata.ocr_used is True             # skan -> OCR realnie poszedl

@@ -11,6 +11,8 @@ from app.extraction.client_tika import (
     TikaRawResult,
     TikaUnavailableError,
 )
+from app.extraction.pdf import PageLimit, PdfPageLimiter
+from app.extraction.quality import PuaDetector
 from app.extraction.service import (
     EmptyExtractionError,
     ExtractionError,
@@ -34,4 +36,8 @@ __all__ = [
     # wyjatki domenowe ekstrakcji
     "ExtractionError",
     "EmptyExtractionError",
+    # jednostki wyspecjalizowane (krok 2.3.5)
+    "PdfPageLimiter",
+    "PageLimit",
+    "PuaDetector",
 ]

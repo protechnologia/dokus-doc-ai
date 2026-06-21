@@ -106,14 +106,47 @@ def test_pick_language_brak_daje_none():
     assert ExtractionService._pick_language({"Content-Type": "application/pdf"}) is None
 
 
+# --- _pick_ocr_used: sygnal "czy poszlo OCR" z metadanych ------------------------
+
+
+def test_pick_ocr_used_z_ocr_page_count():
+    # Tika zwraca pdf:ocrPageCount jako string albo int; >0 = OCR poszedl.
+    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": "1"}) is True
+    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": 3}) is True
+    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": 0}) is False
+    assert ExtractionService._pick_ocr_used({}) is False                         # brak klucza
+    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": "x"}) is False  # nieparsowalne -> False
+
+
 # --- _build_metadata: zlozenie helperow ------------------------------------------
 
 
 def test_build_metadata_sklada_wszystkie_pola():
-    # Scenariusz: typowe metadane + tekst po normalizacji.
-    # Oczekujemy: MIME bez charset, jezyk, oraz dlugosc liczona na podanym tekscie.
+    # Scenariusz: typowe metadane + tekst po normalizacji; bez OCR, bez stron (nie-PDF).
+    # Oczekujemy: MIME bez charset, jezyk, dlugosc, oraz domyslne pola jakosci (ocr/strony).
     meta = ExtractionService._build_metadata(
         "Tresc pisma",
         {"Content-Type": "text/plain; charset=UTF-8", "language": "pl"},
+        None,    # pages_total (nie-PDF)
+        None,    # pages_processed
+        False,   # ocr_truncated
     )
-    assert meta == ExtractionMetadata(content_type="text/plain", language="pl", char_count=11, word_count=2)
+    assert meta == ExtractionMetadata(
+        content_type="text/plain", language="pl", char_count=11, word_count=2,
+        ocr_used=False, pages_total=None, pages_processed=None, ocr_truncated=False,
+    )
+
+
+def test_build_metadata_przepisuje_pola_jakosci():
+    # Scenariusz: PDF po OCR z limitem stron (ocrPageCount>0 + przekazane pages_*).
+    # Oczekujemy: ocr_used wyliczone z metadanych, pola stron przepisane, truncated zachowany.
+    meta = ExtractionService._build_metadata(
+        "Tresc po OCR",
+        {"Content-Type": "application/pdf", "pdf:ocrPageCount": "2"},
+        10,      # pages_total
+        2,       # pages_processed
+        True,    # ocr_truncated
+    )
+    assert meta.ocr_used is True
+    assert meta.pages_total == 10 and meta.pages_processed == 2
+    assert meta.ocr_truncated is True

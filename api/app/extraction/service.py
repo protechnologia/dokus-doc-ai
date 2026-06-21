@@ -1,36 +1,35 @@
-"""Domena ekstrakcji — logika nad surowym wynikiem Tiki (krok 2.3.2, happy path).
+"""Domena ekstrakcji — logika nad surowym wynikiem Tiki (krok 2.3.2 + jakość 2.3.5).
 
 Warstwa DOMENOWA: niezalezna od tego, ze pod spodem stoi akurat Tika (analogia do
 podzialu w LLM: transport `OpenAILLMClient` vs. logika). Transport (`TikaClient`)
 oddaje surowy tekst + surowe metadane; tutaj robimy z tego wynik nadajacy sie do
-streszczenia: normalizujemy whitespace i liczymy metadane (MIME, jezyk, dlugosc).
+streszczenia.
 
-Zakres 2.3.2 jest SWIADOMIE WASKI (happy path). Tu jest TYLKO:
-  - normalizacja whitespace,
-  - metadane: MIME (z metadanych Tiki), dlugosc (znaki/slowa), jezyk (defensywnie z
-    metadanych Tiki, brak -> None; porzadna detekcja to pozniejszy refinement),
-  - pusty wynik po normalizacji -> `EmptyExtractionError`.
-
-SWIADOMIE POZA ZAKRESEM (wchodzi w 2.3.5 / patrz CLAUDE.md "Architektura warstwy
-ekstrakcji" i "2.3.5"): detekcja smieciowej warstwy tekstowej (PUA), OCR-fallback
-(`X-Tika-PDFOcrStrategy`), limit zakresu OCR (`MAX_OCR_PAGES`), rekurencyjna obsluga
-zasobow zagniezdzonych (embedded). Nowe wyjatki domenowe z 2.3.5 dolaczaja pod
-`ExtractionError`.
+Ten serwis jest CIENKIM ORKIESTRATOREM — wlasne ma tylko: normalizacje whitespace,
+liczenie/wyciaganie metadanych (MIME, jezyk, dlugosc, ocr_used) i sklejenie przeplywu.
+Dwie wyspecjalizowane odpowiedzialnosci sa wydzielone do osobnych jednostek (kazda
+testowalna w izolacji):
+  - `PdfPageLimiter` (`app.extraction.pdf`)     — liczenie/ciecie stron PDF; izoluje `pypdf`,
+  - `PuaDetector`    (`app.extraction.quality`) — detekcja smieciowej warstwy tekstowej (PUA).
 
 Struktura (jak w `TikaClient`/`OpenAILLMClient`): czyste fragmenty bez I/O (normalizacja,
-liczenie znakow/slow, wyciagniecie MIME/jezyka) sa wydzielone do osobnych, krotkich metod
-— kazda testowalna jednostkowo bez sieci/transportu; w `extract` zostaje samo wywolanie
-transportu + zlozenie wyniku.
+liczenie znakow/slow, wyciagniecie MIME/jezyka/OCR) sa w osobnych, krotkich metodach;
+w `extract` zostaje samo I/O transportu + delegacja do limitera/detektora + zlozenie wyniku.
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from app.extraction.client_tika import TikaClient
+from app.extraction.pdf import PdfPageLimiter
+from app.extraction.quality import PuaDetector
+
+logger = logging.getLogger(__name__)
 
 # Klucze metadanych Tiki z jezykiem ZADEKLAROWANYM w dokumencie (czytany z wlasciwosci pliku
 # przy parsowaniu) — NIE z detekcji tresci. Zweryfikowane (2026-06-21): `/rmeta/text` jezyka
@@ -42,17 +41,31 @@ _LANGUAGE_KEYS = ("language", "dc:language")
 # Wewnatrz linii zwijamy ciagi spacji/tabow/twardej spacji (U+00A0) do jednej spacji.
 _INLINE_WS = re.compile(r"[ \t ]+")
 
+# Metadana Tiki z liczba stron PDF realnie poddanych OCR. Wiarygodny sygnal "czy poszlo OCR"
+# (zweryfikowane 2026-06-21: `X-TIKA:Parsed-By` dla PDF NIE pokazuje TesseractOCRParser, a
+# `pdf:ocrPageCount` owszem: 0 bez OCR, >0 po OCR — tez przy wymuszonym `ocr_only`).
+_OCR_PAGE_COUNT_KEY = "pdf:ocrPageCount"
+
 
 # --- Wynik domenowy ekstrakcji ---------------------------------------------------
 
 
 class ExtractionMetadata(BaseModel):
-    """Metadane wyekstrahowanego dokumentu — diagnostyka i wejscie pod pipeline (2.3.3+)."""
+    """Metadane wyekstrahowanego dokumentu — diagnostyka i wejscie pod pipeline (2.3.3+).
+
+    Pola `ocr_*`/`pages_*` dochodza w warstwie jakosci (2.3.5): mowia, czy poszlo OCR i
+    czy z PDF wziely tylko pierwsze strony (limit zasobow) — by osoba dekretujaca wiedziala,
+    ze streszczenie powstalo z czesci dokumentu (zasada "limit nie moze byc cichy").
+    """
 
     content_type: str | None = Field(default=None, description="MIME wykryty przez Tike, np. 'application/pdf' (bez parametrow typu charset).")
     language: str | None     = Field(default=None, description="Wykryty jezyk wg metadanych Tiki, np. 'pl'; None gdy nieznany.")
     char_count: int          = Field(description="Liczba znakow tekstu po normalizacji.")
     word_count: int          = Field(description="Liczba slow tekstu po normalizacji (podzial po bialych znakach).")
+    ocr_used: bool           = Field(default=False, description="Czy tresc powstala (w calosci lub czesci) przez OCR — wg `pdf:ocrPageCount`>0.")
+    pages_total: int | None  = Field(default=None, description="Liczba stron zrodlowego PDF; None dla nie-PDF lub gdy nie udalo sie odczytac.")
+    pages_processed: int | None = Field(default=None, description="Ile pierwszych stron PDF realnie wyslano do Tiki (=pages_total, gdy bez ciecia); None dla nie-PDF.")
+    ocr_truncated: bool      = Field(default=False, description="Czy PDF ucieto do limitu `MAX_OCR_PAGES` (pominieto strony pages_processed..pages_total).")
 
 
 class ExtractionResult(BaseModel):
@@ -79,19 +92,19 @@ class EmptyExtractionError(ExtractionError):
 
 
 class ExtractionService:
-    """Domena ekstrakcji nad surowym wynikiem transportu.
+    """Domena ekstrakcji nad surowym wynikiem transportu — cienki orkiestrator.
 
     Do czego:
-        Zamienia surowy `TikaRawResult` (tekst + metadane) na domenowy
-        `ExtractionResult`: czysci whitespace i liczy metadane (MIME, jezyk, dlugosc).
-        Nie wie i nie ma wiedziec, ze transportem jest akurat Tika — dostaje go
-        wstrzyknietego, rozmawia tylko przez `TikaClient.extract`.
+        Zamienia surowy `TikaRawResult` (tekst + metadane) na domenowy `ExtractionResult`.
+        Sklada przeplyw, delegujac wyspecjalizowane decyzje: limit/ciecie stron PDF do
+        `PdfPageLimiter`, detekcje smieciowej warstwy (PUA) do `PuaDetector`. Nie wie i nie
+        ma wiedziec, ze transportem jest akurat Tika ani ze strony tnie akurat `pypdf`.
 
-    Flow jednego `extract(...)`:
-        1. transport (`TikaClient.extract`) -> surowy tekst + surowe metadane (jedyne I/O),
-        2. `_normalize_whitespace` -> czysty tekst,
-        3. pusty po normalizacji -> `EmptyExtractionError`,
-        4. `_build_metadata` -> MIME/jezyk/dlugosc -> `ExtractionResult`.
+    Flow jednego `extract(...)` (strategia (B), krok 2.3.5):
+        1. `PdfPageLimiter.apply` — dla PDF ew. utnij do `max_ocr_pages` stron PRZED Tika,
+        2. transport (`TikaClient.extract`, `auto`) -> surowy tekst + metadane (I/O),
+        3. `PuaDetector.is_garbage` -> jesli warstwa PDF smieciowa, wymus `ocr_only` (drugie I/O),
+        4. normalizacja + `_build_metadata` -> `ExtractionResult`.
 
     Bledy transportu (`TikaUnavailableError`/`TikaExtractionError`) NIE sa tu lapane —
     propaguja do endpointu, ktory mapuje je na HTTP (502/422) w 2.3.3.
@@ -99,18 +112,24 @@ class ExtractionService:
 
     def __init__(
         self,
-        client: TikaClient,   # transport do Tiki; w testach atrapa z async `extract`
+        client: TikaClient,        # transport do Tiki; w testach atrapa z async `extract`
+        max_ocr_pages: int = 30,   # limit stron PDF wysylanych do Tiki (straznik OCR, z `Settings`)
     ) -> None:
         """Opis metody:
-        Zbuduj serwis nad wstrzyknietym transportem (sama konfiguracja, bez I/O).
+        Zbuduj serwis nad wstrzyknietym transportem; limiter stron i detektor PUA tworzymy
+        wewnatrz z konfiguracji (to mechanika domeny, nie wymienialne silniki — w odroznieniu
+        od transportu wstrzykiwanego). Sama konfiguracja, bez I/O.
 
         Przyklad argumentow:
             client=TikaClient(base_url="http://tika:9998")
+            max_ocr_pages=30
 
         Przyklad wyniku:
             gotowy ExtractionService
         """
         self._client = client
+        self._pager = PdfPageLimiter(max_pages=max_ocr_pages)
+        self._pua = PuaDetector()
 
     # --- Czyste helpery (bez I/O) — testowalne jednostkowo bez transportu -----------
 
@@ -174,6 +193,8 @@ class ExtractionService:
         """
         # split() bez argumentu dzieli po dowolnych bialych znakach i pomija puste tokeny.
         return len(text.split())
+
+    # --- Helpery metadanych (czytanie surowego wyjscia Tiki) — bez I/O ---------------
 
     @staticmethod
     def _as_text(
@@ -242,28 +263,59 @@ class ExtractionService:
                 return language
         return None
 
+    @staticmethod
+    def _pick_ocr_used(
+        raw_metadata: dict[str, Any],   # surowe metadane Tiki (zrodlo pdf:ocrPageCount)
+    ) -> bool:
+        """Opis metody:
+        Czy poszlo OCR — wg `pdf:ocrPageCount`>0 (jedyny wiarygodny sygnal dla PDF, patrz
+        stala `_OCR_PAGE_COUNT_KEY`). Wartosc bywa str lub int; brak/nieparsowalne -> False.
+        Czysta funkcja.
+
+        Przyklad argumentow:
+            raw_metadata={"pdf:ocrPageCount": "1"}
+
+        Przyklad wyniku:
+            True
+        """
+        value = raw_metadata.get(_OCR_PAGE_COUNT_KEY)
+        try:
+            # Tika zwraca to pole jako string ("1") albo liczbe; oba sprowadzamy do int.
+            return int(value) > 0
+        except (TypeError, ValueError):
+            return False
+
     @classmethod
     def _build_metadata(
         cls,
-        text: str,                  # tekst PO normalizacji (na nim liczymy dlugosc)
-        raw_metadata: dict[str, Any],   # surowe metadane Tiki (zrodlo MIME i jezyka)
+        text: str,                       # tekst PO normalizacji (na nim liczymy dlugosc)
+        raw_metadata: dict[str, Any],    # surowe metadane Tiki (zrodlo MIME, jezyka, ocrPageCount)
+        pages_total: int | None,         # liczba stron zrodlowego PDF (None dla nie-PDF)
+        pages_processed: int | None,     # ile pierwszych stron PDF wyslano (None dla nie-PDF)
+        ocr_truncated: bool,             # czy ucieto PDF do limitu stron
     ) -> ExtractionMetadata:
         """Opis metody:
-        Zloz metadane wyniku — cienkie zlozenie czterech czystych helperow (MIME, jezyk,
-        znaki, slowa), kazdy testowany osobno. Czysta funkcja.
+        Zloz metadane wyniku — cienkie zlozenie czystych helperow (MIME, jezyk, znaki,
+        slowa, ocr_used) i przekazanych pol stron/ciecia. Czysta funkcja.
 
         Przyklad argumentow:
             text="Tresc pisma"
             raw_metadata={"Content-Type": "text/plain; charset=UTF-8", "language": "pl"}
+            pages_total=None, pages_processed=None, ocr_truncated=False
 
         Przyklad wyniku:
-            ExtractionMetadata(content_type="text/plain", language="pl", char_count=11, word_count=2)
+            ExtractionMetadata(content_type="text/plain", language="pl", char_count=11,
+                               word_count=2, ocr_used=False, pages_total=None, ...)
         """
         return ExtractionMetadata(
             content_type=cls._pick_content_type(raw_metadata),
             language=cls._pick_language(raw_metadata),
             char_count=cls._count_chars(text),
             word_count=cls._count_words(text),
+            ocr_used=cls._pick_ocr_used(raw_metadata),
+            pages_total=pages_total,
+            pages_processed=pages_processed,
+            ocr_truncated=ocr_truncated,
         )
 
     # --- Wywolanie (I/O przez transport) — orkiestracja ----------------------------
@@ -276,7 +328,12 @@ class ExtractionService:
         filename: str | None = None,      # nazwa pliku jako podpowiedz typu; None = pomijamy
     ) -> ExtractionResult:
         """Opis metody:
-        Wyekstrahuj dokument: wolaj transport, znormalizuj tekst, policz metadane.
+        Wyekstrahuj dokument (strategia (B), krok 2.3.5):
+          1. straznik zasobow (`PdfPageLimiter`) — dla PDF utnij do `max_ocr_pages` stron PRZED Tika,
+          2. ekstrakcja `auto` (globalny tika-config: tekstowe natywnie, skany OCR-owane),
+          3. jakosc (`PuaDetector`) — jesli warstwa PDF jest smieciowa (PUA), wymus `ocr_only`
+             na tym samym (juz uciętym) pliku,
+          4. normalizacja + metadane (w tym ocr_used / pages_* / ocr_truncated).
 
         Przyklad argumentow:
             data=b"%PDF-1.7 ..."
@@ -285,25 +342,42 @@ class ExtractionService:
         Przyklad wyniku:
             ExtractionResult(text="Tresc dokumentu...",
                              metadata=ExtractionMetadata(content_type="application/pdf",
-                                                         language="pl", char_count=42, word_count=6))
+                                                         language="pl", char_count=42, word_count=6,
+                                                         ocr_used=True, pages_total=100,
+                                                         pages_processed=30, ocr_truncated=True))
 
         Raises:
             EmptyExtractionError:  po normalizacji nie zostal zaden tekst.
             TikaUnavailableError:  transport — tika-server nieosiagalny (propaguje z `TikaClient`).
             TikaExtractionError:   transport — Tika odrzucila plik (propaguje z `TikaClient`).
         """
-        # Jedyne I/O: transport oddaje surowy tekst + metadane (bledy Tiki propaguja).
-        raw = await self._client.extract(data=data, content_type=content_type, filename=filename)
+        # 1) Straznik zasobow: dla PDF ew. utnij do limitu stron (pypdf, bez sieci).
+        limit = self._pager.apply(data)
+        is_pdf = limit.pages_total is not None  # parsowalny PDF (limiter policzyl strony)
 
-        # Czysta normalizacja (testowana osobno).
+        # 2) Ekstrakcja `auto` (globalny tika-config). Jedyne I/O; bledy Tiki propaguja.
+        raw = await self._client.extract(data=limit.data, content_type=content_type, filename=filename)
         text = self._normalize_whitespace(raw.text)
 
-        # Pusto po normalizacji = brak tresci do streszczenia -> blad domenowy (endpoint -> 422).
-        # Uwaga (2.3.5): smieciowa warstwa PUA daje tekst NIEpusty (smiec) — tego warunek
-        # nie wykryje; detekcja PUA + OCR-fallback dochodzi osobno.
+        # 3) Jakosc: smieciowa warstwa tekstowa PDF (PUA) — `auto` jej NIE zOCR-uje (warstwa
+        #    "jest"), wiec wymuszamy OCR_ONLY na tym samym, juz uciętym pliku. Drugie I/O.
+        if is_pdf and self._pua.is_garbage(text):
+            logger.info(
+                "Wykryto smieciowa warstwe tekstowa PDF (PUA %.0f%% >= prog %.0f%%); wymuszam OCR_ONLY.",
+                100 * self._pua.ratio(text), 100 * self._pua.threshold,
+            )
+            raw = await self._client.extract(
+                data=limit.data, content_type=content_type, filename=filename, ocr_strategy="ocr_only"
+            )
+            text = self._normalize_whitespace(raw.text)
+
+        # Pusto po normalizacji = brak tresci (pusty PDF / nieczytelny skan) -> 422 w endpointcie.
+        # Przy `auto` skany sa juz zOCR-owane wczesniej, wiec pusto = naprawde brak tresci.
         if not text:
             raise EmptyExtractionError("Po normalizacji nie zostal zaden tekst (plik bez tresci tekstowej).")
 
-        # Metadane liczymy na tekscie znormalizowanym (testowane osobno).
-        metadata = self._build_metadata(text, raw.metadata)
+        # 4) Metadane na tekscie znormalizowanym + sygnaly stron/OCR z ostatniej ekstrakcji.
+        metadata = self._build_metadata(
+            text, raw.metadata, limit.pages_total, limit.pages_processed, limit.truncated
+        )
         return ExtractionResult(text=text, metadata=metadata)

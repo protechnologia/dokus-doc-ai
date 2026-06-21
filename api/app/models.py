@@ -30,8 +30,8 @@ class HealthResponse(BaseModel):
     service: str = Field(description="Nazwa uslugi.")
     version: str = Field(description="Wersja aplikacji.")
     dependencies: dict[str, DependencyStatus] = Field(
-        default_factory=dict,
-        description="Stan zaleznosci, np. {'tika': 'ok'}.",
+        default_factory = dict,
+        description     = "Stan zaleznosci, np. {'tika': 'ok'}.",
     )
 
 
@@ -51,12 +51,21 @@ class ExtractRequest(BaseModel):
 
 
 class ExtractMetadata(BaseModel):
-    """Metadane w odpowiedzi /extract — odbicie `ExtractionMetadata` z domeny na granicy HTTP."""
+    """Metadane w odpowiedzi /extract — odbicie `ExtractionMetadata` z domeny na granicy HTTP.
 
-    content_type: str | None = Field(default=None, description="MIME wykryty przez Tike, np. 'application/pdf'.")
-    language: str | None     = Field(default=None, description="Wykryty jezyk wg metadanych Tiki, np. 'pl'; None gdy nieznany.")
-    char_count: int          = Field(description="Liczba znakow tekstu po normalizacji.")
-    word_count: int          = Field(description="Liczba slow tekstu po normalizacji.")
+    Pola `ocr_*`/`pages_*` (krok 2.3.5) informuja, czy poszlo OCR i czy z PDF wziely tylko
+    pierwsze strony (limit zasobow) — by konsument (DOKUS / osoba dekretujaca) wiedzial, ze
+    streszczenie powstalo z czesci dokumentu.
+    """
+
+    content_type: str | None    = Field(default=None, description="MIME wykryty przez Tike, np. 'application/pdf'.")
+    language: str | None        = Field(default=None, description="Wykryty jezyk wg metadanych Tiki, np. 'pl'; None gdy nieznany.")
+    char_count: int             = Field(description="Liczba znakow tekstu po normalizacji.")
+    word_count: int             = Field(description="Liczba slow tekstu po normalizacji.")
+    ocr_used: bool              = Field(default=False, description="Czy tresc powstala (w calosci lub czesci) przez OCR.")
+    pages_total: int | None     = Field(default=None, description="Liczba stron zrodlowego PDF; None dla nie-PDF.")
+    pages_processed: int | None = Field(default=None, description="Ile pierwszych stron PDF realnie przetworzono; None dla nie-PDF.")
+    ocr_truncated: bool         = Field(default=False, description="Czy PDF ucieto do limitu stron (pominieto dalsze strony).")
 
 
 class ExtractResponse(BaseModel):
@@ -89,11 +98,15 @@ class ExtractResponse(BaseModel):
         """
         meta = result.metadata
         return cls(
-            text=result.text,
-            metadata=ExtractMetadata(
-                content_type=meta.content_type,
-                language=meta.language,
-                char_count=meta.char_count,
-                word_count=meta.word_count,
+            text     = result.text,
+            metadata = ExtractMetadata(
+                content_type    = meta.content_type,
+                language        = meta.language,
+                char_count      = meta.char_count,
+                word_count      = meta.word_count,
+                ocr_used        = meta.ocr_used,
+                pages_total     = meta.pages_total,
+                pages_processed = meta.pages_processed,
+                ocr_truncated   = meta.ocr_truncated,
             ),
         )

@@ -11,7 +11,9 @@ Pliki testowe sa generowane w locie, zeby nie trzymac binariow w repo.
 import io
 import os
 
+import docx
 import pytest
+from PIL import Image, ImageDraw, ImageFont
 
 # Parasol `integration` (wszystkie testy integracyjne) + węższy `integration_tika`.
 pytestmark = [pytest.mark.integration, pytest.mark.integration_tika]
@@ -53,8 +55,6 @@ def test_server_alive(tika_client):
 
 def test_native_extraction_docx(tika_client):
     """DOCX czytany natywnie (POI) — polskie znaki bez udzialu OCR."""
-    docx = pytest.importorskip("docx", reason="python-docx nie zainstalowany")
-
     document = docx.Document()
     document.add_paragraph(PL_PANGRAM)
     buf = io.BytesIO()
@@ -71,9 +71,6 @@ def test_native_extraction_docx(tika_client):
 
 def test_ocr_polish_png(tika_client):
     """Skan (PNG) -> OCR. Kryterium kroku 1: poprawne polskie znaki, nie krzaki."""
-    pytest.importorskip("PIL", reason="Pillow nie zainstalowany")
-    from PIL import Image, ImageDraw, ImageFont
-
     font_path = _find_font()
     if not font_path:
         pytest.skip("Brak fontu TTF z polskimi glifami (np. DejaVuSans) — pomijam OCR.")

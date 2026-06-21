@@ -16,24 +16,38 @@ from app.extraction.client_tika import TikaClient
 
 
 def test_build_headers_tylko_accept_gdy_brak_podpowiedzi():
-    # Scenariusz: nie znamy typu ani nazwy pliku (oba None).
-    # Oczekujemy: sam Accept JSON — wykrywanie typu zostawiamy Tice.
-    h = TikaClient._build_headers(None, None)
+    # Scenariusz: nie znamy typu ani nazwy pliku, bez wymuszania OCR (wszystko None).
+    # Oczekujemy: sam Accept JSON — wykrywanie typu i strategie OCR zostawiamy Tice.
+    h = TikaClient._build_headers(None, None, None)
     assert h == {"Accept": "application/json"}
 
 
 def test_build_headers_dodaje_content_type():
     # Scenariusz: znamy MIME pliku.
     # Oczekujemy: trafia jako podpowiedz Content-Type.
-    h = TikaClient._build_headers("application/pdf", None)
+    h = TikaClient._build_headers("application/pdf", None, None)
     assert h["Content-Type"] == "application/pdf"
 
 
 def test_build_headers_dodaje_nazwe_pliku():
     # Scenariusz: znamy nazwe pliku (dodatkowa podpowiedz typu po rozszerzeniu).
     # Oczekujemy: nazwa laduje w Content-Disposition.
-    h = TikaClient._build_headers(None, "pismo.pdf")
+    h = TikaClient._build_headers(None, "pismo.pdf", None)
     assert h["Content-Disposition"] == 'attachment; filename="pismo.pdf"'
+
+
+def test_build_headers_dodaje_ocr_strategy():
+    # Scenariusz: domena wymusza OCR dla smieciowej warstwy PDF (krok 2.3.5).
+    # Oczekujemy: per-request naglowek X-Tika-PDFOcrStrategy (nadpisuje globalny auto).
+    h = TikaClient._build_headers("application/pdf", None, "ocr_only")
+    assert h["X-Tika-PDFOcrStrategy"] == "ocr_only"
+
+
+def test_build_headers_bez_ocr_strategy_nie_dodaje_naglowka():
+    # Scenariusz: brak wymuszenia (None) — najczestszy przypadek (dziala globalny auto).
+    # Oczekujemy: naglowka OCR nie ma w ogole (nie pusty string, nie domyslny).
+    h = TikaClient._build_headers("application/pdf", None, None)
+    assert "X-Tika-PDFOcrStrategy" not in h
 
 
 # --- _pick_text: wyjecie tresci kontenera ---------------------------------------

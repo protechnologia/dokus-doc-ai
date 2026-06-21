@@ -22,13 +22,19 @@ wydzielone i testowalne jednostkowo bez sieci; w `extract` zostaje samo I/O + tr
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, Field
 
 # Klucz, pod ktorym Tika w odpowiedzi /rmeta/text zwraca wyekstrahowana tresc.
 _CONTENT_KEY = "X-TIKA:content"
+
+# Dozwolone wartosci strategii OCR dla PDF (per-request naglowek X-Tika-PDFOcrStrategy).
+# Zamkniety zbior = enum Tiki OCR_STRATEGY (AUTO/NO_OCR/OCR_ONLY/OCR_AND_TEXT_EXTRACTION),
+# w formie malymi literami jak w naglowku. Domena uzywa "ocr_only"; reszta dla kompletnosci
+# kontraktu transportu (a `Literal` zamiast `str` lapie literowki i dokumentuje opcje).
+OcrStrategy = Literal["auto", "no_ocr", "ocr_only", "ocr_and_text_extraction"]
 
 
 # --- Surowy wynik transportu -----------------------------------------------------
@@ -102,20 +108,29 @@ class TikaClient:
 
     @staticmethod
     def _build_headers(
-        content_type: str | None,   # MIME pliku jako podpowiedz, np. "application/pdf"; None = autodetekcja Tiki
-        filename: str | None,       # nazwa pliku jako dodatkowa podpowiedz, np. "pismo.pdf"; None = pomijamy
+        content_type: str | None,          # MIME pliku jako podpowiedz, np. "application/pdf"; None = autodetekcja Tiki
+        filename: str | None,              # nazwa pliku jako dodatkowa podpowiedz, np. "pismo.pdf"; None = pomijamy
+        ocr_strategy: OcrStrategy | None,   # wymuszenie strategii OCR dla PDF, np. "ocr_only"; None = domyslna z tika-config (auto)
     ) -> dict[str, str]:
         """Opis metody:
         Zloz naglowki zadania do /rmeta/text. Czysta funkcja — zero I/O.
 
+        `ocr_strategy` mapuje sie na per-request naglowek `X-Tika-PDFOcrStrategy`
+        (mechanizm "Configuring Parsers At Parse Time" — prefiks `X-Tika-PDF` + nazwa
+        parametru). To NADPISUJE globalny `ocrStrategy=auto` z tika-config.xml tylko dla
+        tego jednego zadania; konfig pliku zostaje nietkniety. Uzywane przez domene do
+        wymuszenia `ocr_only`, gdy warstwa tekstowa PDF jest smieciowa (PUA, krok 2.3.5).
+
         Przyklad argumentow:
             content_type="application/pdf"
             filename="pismo.pdf"
+            ocr_strategy="ocr_only"
 
         Przyklad wyniku:
             {"Accept": "application/json",
              "Content-Type": "application/pdf",
-             "Content-Disposition": 'attachment; filename="pismo.pdf"'}
+             "Content-Disposition": 'attachment; filename="pismo.pdf"',
+             "X-Tika-PDFOcrStrategy": "ocr_only"}
         """
         # /rmeta/text zwraca JSON (tresc + metadane w jednym wywolaniu).
         headers = {"Accept": "application/json"}
@@ -125,6 +140,9 @@ class TikaClient:
         # Nazwa pliku bywa dodatkowa podpowiedzia przy wykrywaniu typu (po rozszerzeniu).
         if filename:
             headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        # Per-request override strategii OCR dla PDF (None = nie ruszamy, dziala globalny auto).
+        if ocr_strategy:
+            headers["X-Tika-PDFOcrStrategy"] = ocr_strategy
         return headers
 
     @staticmethod
@@ -195,12 +213,16 @@ class TikaClient:
         self,
         *,
         data: bytes,                      # surowe bajty pliku, np. zawartosc PDF/DOCX/PNG
-        content_type: str | None = None,  # MIME jako podpowiedz; None = autodetekcja Tiki
-        filename: str | None = None,      # nazwa pliku jako podpowiedz typu; None = pomijamy
+        content_type: str | None = None,          # MIME jako podpowiedz; None = autodetekcja Tiki
+        filename: str | None = None,              # nazwa pliku jako podpowiedz typu; None = pomijamy
+        ocr_strategy: OcrStrategy | None = None,   # per-request override OCR dla PDF, np. "ocr_only"; None = globalny auto
     ) -> TikaRawResult:
         """Opis metody:
         Wyslij plik do tika-server i zwroc surowy tekst + metadane.
         Buduje naglowki -> wola /rmeta/text -> parsuje odpowiedz na `TikaRawResult`.
+
+        `ocr_strategy` (gdy podane) nadpisuje strategie OCR PDF tylko dla tego zadania
+        (np. domena wymusza "ocr_only" przy smieciowej warstwie PUA — krok 2.3.5).
 
         Przyklad argumentow:
             data=b"%PDF-1.7 ..."
@@ -214,7 +236,7 @@ class TikaClient:
             TikaExtractionError:  Tika odpowiedziala bledem HTTP na plik (nieobslugiwany/uszkodzony).
         """
         # Czysta budowa naglowkow (testowana osobno).
-        headers = self._build_headers(content_type, filename)
+        headers = self._build_headers(content_type, filename, ocr_strategy)
         url = self._base_url + "/rmeta/text"
 
         # --- Wywolanie Tiki; bledy httpx -> TikaError przez klasyfikator ------------

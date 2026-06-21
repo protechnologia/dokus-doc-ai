@@ -1,18 +1,11 @@
 """Testy jednostkowe konfiguracji (pydantic-settings). Bez uruchamiania uslug.
 
-Gdy runtime aplikacji nie jest zainstalowany (pip install -r api/requirements.txt),
-testy sa POMIJANE, nie failuja — spojne z konwencja projektu.
+Wymagaja zainstalowanego runtime aplikacji (`pip install -r requirements-dev.txt`, ktory
+ciagnie `api/requirements.txt`). Zadeklarowanych zaleznosci NIE guardujemy `importorskip` —
+ich brak to blad instalacji (glosny), nie powod do cichego skip.
 """
 
-import pytest
-
-# pydantic-settings to zaleznosc runtime aplikacji (api/requirements.txt).
-pytest.importorskip(
-    "pydantic_settings",
-    reason="pydantic-settings nie zainstalowany — pip install -r api/requirements.txt",
-)
-
-from app.config import Settings  # noqa: E402  (import po importorskip)
+from app.config import Settings
 
 # ENV, ktore moga byc ustawione w srodowisku/.env i zaklocic testy domyslnych wartosci.
 _RELEVANT_ENV = (

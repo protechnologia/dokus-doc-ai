@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     # odrzucamy wczesnie (HTTP 413) zamiast obciazac Tike/OCR. Domyslnie 20 MiB.
     max_upload_bytes: int = 20 * 1024 * 1024
 
+    # Straznik zasobow OCR (krok 2.3.5). Limit liczby stron PDF, ktore wysylamy do Tiki:
+    # gdy PDF ma wiecej stron, tniemy go (pypdf) do pierwszych N PRZED ekstrakcja —
+    # inaczej skan obrazowy OCR-owalby sie w calosci i moglby zatkac usluge/przekroczyc
+    # timeout. UWAGA: w przyjetej strategii (limit PRZED `auto`) limit dotyczy KAZDEGO
+    # duzego PDF, nie tylko sciezki OCR — czysty dlugi PDF tekstowy tez jest ucinany
+    # (de facto MAX_PDF_PAGES). Ciecie NIE jest ciche: log + metadane "przetworzono N z M
+    # stron" w odpowiedzi. Default 30 — z zapasem ponizej `tika_timeout_seconds` przy OCR.
+    max_ocr_pages: int = 30
+
     # --- Dostawca LLM (klient: app.llm, krok 2.2) ---
     # Faza 1 = komercyjne API. Na dev/test domyslnie 'fake' — nic nie wychodzi na
     # zewnatrz (spojne z zasada "prywatnosc pierwsza").

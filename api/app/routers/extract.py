@@ -46,10 +46,10 @@ def _get_extraction_service(
         settings=Settings(tika_url="http://tika:9998", tika_timeout_seconds=120.0)
 
     Przyklad wyniku:
-        ExtractionService(TikaClient(base_url="http://tika:9998", timeout=120.0))
+        ExtractionService(TikaClient(base_url="http://tika:9998", timeout=120.0), max_ocr_pages=30)
     """
     client = TikaClient(base_url=settings.tika_url, timeout=settings.tika_timeout_seconds)
-    return ExtractionService(client)
+    return ExtractionService(client, max_ocr_pages=settings.max_ocr_pages)
 
 
 def _decode_base64(

@@ -12,6 +12,7 @@ bo projekt nie uzywa pytest-asyncio.
 import asyncio
 import io
 
+import docx
 import pytest
 
 from app.extraction import TikaClient, TikaRawResult
@@ -22,8 +23,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.integration_tika]
 
 def test_extract_docx_natywnie(tika_url):
     """DOCX -> TikaClient.extract: tekst z polskimi znakami + wykryty Content-Type."""
-    docx = pytest.importorskip("docx", reason="python-docx nie zainstalowany")
-
     document = docx.Document()
     document.add_paragraph("Zażółć gęślą jaźń")
     buf = io.BytesIO()

@@ -81,6 +81,11 @@ def test_extract_zwraca_tekst_i_metadane():
         "language": "pl",
         "char_count": 11,
         "word_count": 2,
+        # Pola jakosci (2.3.5) — domyslne, bo stub-wynik domenowy ich nie ustawia.
+        "ocr_used": False,
+        "pages_total": None,
+        "pages_processed": None,
+        "ocr_truncated": False,
     }
 
 
