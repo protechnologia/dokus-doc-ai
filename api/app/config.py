@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Krotki timeout na samo sprawdzenie dostepnosci Tiki w /health.
     health_check_timeout_seconds: float = 3.0
 
+    # --- Ekstrakcja (krok 2.3) ---
+    # Gorny limit rozmiaru ZDEKODOWANEGO pliku (bajty). Straznik zasobow: za duzy upload
+    # odrzucamy wczesnie (HTTP 413) zamiast obciazac Tike/OCR. Domyslnie 20 MiB.
+    max_upload_bytes: int = 20 * 1024 * 1024
+
     # --- Dostawca LLM (klient: app.llm, krok 2.2) ---
     # Faza 1 = komercyjne API. Na dev/test domyslnie 'fake' — nic nie wychodzi na
     # zewnatrz (spojne z zasada "prywatnosc pierwsza").

@@ -330,23 +330,36 @@ Pliki: `api/app/extraction/service.py` (`ExtractionService` + modele `Extraction
 punktowo). **Weryfikacja (2026-06-21):** `pytest` → 60 PASSED (49 unit, +17 wobec 2.3.1;
 `pytest -m integration_tika` → 7 PASSED, w tym 3 nowe dla serwisu: DOCX, charset, język).
 
-**2.3.3 — Modele I/O + endpoint `POST /extract`.** `api/app/models.py`: `ExtractRequest`
+**2.3.3 — Modele I/O + endpoint `POST /extract`. [ZROBIONE i ZWERYFIKOWANE]** `api/app/models.py`: `ExtractRequest`
 (`content_base64` + opcjonalne `filename`/`content_type`), `ExtractResponse` (tekst +
-zagnieżdżone metadane). Router `api/app/routers/extract.py`: dekodowanie base64 + walidacja
-rozmiaru (nowy `Settings.max_upload_bytes`), DI `ExtractionService` **inline przez
-`Depends`** (bez osobnej fabryki — Tika to jeden silnik, w odróżnieniu od wymienialnego
-LLM). Mapowanie wyjątków → HTTP: zły base64 → **422**; pusty plik → **422**; za duży →
-**413**; `TikaUnavailableError` → **502**; `TikaExtractionError`/`EmptyExtractionError` →
-**422**. Rejestracja routera w `main.py`. Testy: integracyjne `integration_fastapi` przez
-endpoint (DOCX natywny; **OCR PNG** — niezależny od decyzji PUA, więc może powstać tu).
+zagnieżdżone metadane) — modele API **świadomie odrębne** od domenowych (`ExtractionResult`/
+`ExtractionMetadata`), mapowanie `ExtractResponse.from_result` (kontrakt HTTP stoi
+samodzielnie, domena może ewoluować w 2.3.5 bez ruszania schematu). Router
+`api/app/routers/extract.py`: dekodowanie base64 (`validate=True`) + walidacja rozmiaru
+(nowy `Settings.max_upload_bytes`), DI `ExtractionService` **inline przez `Depends`**
+(`_get_extraction_service`, bez osobnej fabryki — Tika to jeden silnik, w odróżnieniu od
+wymienialnego LLM). Czyste helpery `_decode_base64`/`_validate_size` (testowalne, bez I/O).
+Mapowanie wyjątków → HTTP: zły base64 → **422**; pusty plik → **422**; za duży → **413**;
+`TikaUnavailableError` → **502**; `TikaExtractionError`/`EmptyExtractionError` → **422**.
+Stałe statusu w nazwach nieprzestarzałych (`HTTP_422_UNPROCESSABLE_CONTENT`,
+`HTTP_413_CONTENT_TOO_LARGE`). Rejestracja routera w `main.py`. Testy: jednostkowe
+`tests/unit/test_extract_router.py` (`TestClient` + `dependency_overrides`, atrapa serwisu —
+mapowanie base64/rozmiaru/wyjątków na kody, bez sieci) ORAZ integracyjne
+`tests/integration/test_fastapi_extract.py` (`integration_fastapi` przez endpoint: DOCX natywny,
+**OCR PNG** generowany w locie, złe base64 → 422).
 
-**2.3.4 — Config + dokumentacja.** `MAX_UPLOAD_BYTES` w `Settings` + `.env.example`; sekcja
-`POST /extract` w README (wejście/wyjście/kody błędów); aktualizacja statusu README i
-dopisanie „Stan kroku 2.3" po weryfikacji.
+**2.3.4 — Config + dokumentacja. [ZROBIONE i ZWERYFIKOWANE]** `MAX_UPLOAD_BYTES` w `Settings`
+(domyślnie 20 MiB) + `.env.example`; sekcja `POST /extract` w README (wejście/wyjście/kody
+błędów + przykład `curl`); aktualizacja checklisty statusu i tabeli ustawień w README.
 
-**Weryfikacja całości 2.3 (happy path 2.3.1–2.3.4):** `pytest tests/unit` + `pytest -m
-integration_fastapi` (DOCX i PNG przez endpoint), `docker compose up -d` (oba kontenery
-`healthy`).
+**Weryfikacja całości 2.3 (happy path 2.3.1–2.3.4) — przeszła (2026-06-21):** `pytest` →
+**70 PASSED** (56 unit, w tym 7 nowych dla routera `/extract`; reszta integracyjne, w tym
+3 nowe `/extract` — DOCX natywny, OCR PNG, złe base64). `docker compose build fastapi` OK;
+oba kontenery `healthy`; `pytest -m "integration_fastapi or integration_tika"` → 13 PASSED.
+Smoke przez realny kontener: `POST /extract` (`text/plain`) → `{"text":"…","metadata":
+{"content_type":"text/plain","language":null,"char_count":38,"word_count":6}}` (charset
+ucięty z MIME), złe base64 → 422. **Świadomie poza 2.3:** detekcja PUA / OCR-fallback /
+limit stron — krok 2.3.5 (test PDF nadal WSTRZYMANY).
 
 **2.3.5 — Jakość ekstrakcji: detekcja PUA + OCR-fallback + limit stron.** Warstwa jakości
 w `ExtractionService`, świadomie odłożona z happy patha (2.3.2). Wchodzi DOPIERO po

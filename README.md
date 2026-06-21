@@ -12,8 +12,8 @@ streszczanie dokumentów. Opis celu, stacku i zasad: [CLAUDE.md](CLAUDE.md).
   3. [ ] API: czysta ekstrakcja
      1. [x] `TikaClient` — transport do Tiki (surowy tekst + metadane, mapowanie błędów Tiki na wyjątki)
      2. [x] `ExtractionService` — domena: normalizacja + metadane (happy path; detekcja PUA / OCR-fallback / limit stron odłożone)
-     3. [ ] `POST /extract` — wejście base64 (JSON), wyjście tekst + metadane, mapowanie błędów na kody HTTP
-     4. [ ] Config (`MAX_UPLOAD_BYTES`) + dokumentacja `POST /extract`
+     3. [x] `POST /extract` — wejście base64 (JSON), wyjście tekst + metadane, mapowanie błędów na kody HTTP
+     4. [x] Config (`MAX_UPLOAD_BYTES`) + dokumentacja `POST /extract`
      5. [ ] Jakość ekstrakcji — detekcja PUA + OCR-fallback + limit stron (`MAX_OCR_PAGES`)
   4. [ ] API: czysta summaryzacja
   5. [ ] API: pełny pipeline
@@ -56,6 +56,7 @@ Ustawienia **aplikacji** (`Settings`):
 | `TIKA_URL` | `http://localhost:9998` | Adres Tiki widziany przez API. W compose: `http://tika:9998`. |
 | `TIKA_TIMEOUT_SECONDS` | `120` | Timeout ekstrakcji w Tice (OCR bywa wolny). |
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Krótki ping Tiki w `/health`. |
+| `MAX_UPLOAD_BYTES` | `20971520` | Górny limit rozmiaru zdekodowanego pliku w `POST /extract` (20 MiB); powyżej → `413`. |
 | `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake` (offline, nic nie wychodzi na zewnątrz) lub `openai`. |
 | `LLM_API_KEY` | — | Klucz API dostawcy LLM (wymagany dla `openai`). |
 | `LLM_MODEL` | — | Nazwa modelu, np. `gpt-4o-mini` (wymagana dla `openai`). |
@@ -65,8 +66,8 @@ Ustawienia **aplikacji** (`Settings`):
 ## API
 
 Bazowy adres: `http://localhost:8000` (port z `FASTAPI_PORT`). Interaktywna dokumentacja
-(Swagger UI) pod `/docs`. Na razie dostępny jest tylko `/health` — endpointy ekstrakcji
-i streszczania dochodzą w kolejnych krokach (2.3–2.5).
+(Swagger UI) pod `/docs`. Dostępne endpointy: `GET /health` i `POST /extract` (czysta
+ekstrakcja). Streszczanie i pełny pipeline dochodzą w kolejnych krokach (2.4–2.5).
 
 Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
 ten sam identyfikator trafia do logów, co ułatwia korelację.
@@ -105,6 +106,64 @@ Przykładowa odpowiedź — Tika niedostępna (kod HTTP nadal `200`):
   "dependencies": { "tika": "unreachable" }
 }
 ```
+
+### `POST /extract`
+
+Czysta ekstrakcja tekstu z pliku (bez streszczania). Plik przesyłasz jako **base64 w JSON**
+(nie multipart). `filename`/`content_type` to opcjonalne podpowiedzi typu dla Tiki — gdy ich
+brak, Tika sama wykrywa typ.
+
+Wejście (`ExtractRequest`):
+
+| Pole | Wymagane | Opis |
+|---|---|---|
+| `content_base64` | tak | Zawartość pliku zakodowana base64. |
+| `filename` | nie | Nazwa pliku (podpowiedź typu), np. `pismo.pdf`. |
+| `content_type` | nie | MIME (podpowiedź), np. `application/pdf`; brak → autodetekcja. |
+
+Przykładowe żądanie (`content_base64` skrócony):
+
+```json
+{
+  "content_base64": "JVBERi0xLjcKJeLjz9MKMyAwIG9iago...",
+  "filename": "pismo.pdf",
+  "content_type": "application/pdf"
+}
+```
+
+Wyjście (`ExtractResponse`) — wyekstrahowany tekst + metadane (MIME, język, długość):
+
+```json
+{
+  "text": "Treść dokumentu...",
+  "metadata": {
+    "content_type": "application/pdf",
+    "language": "pl",
+    "char_count": 42,
+    "word_count": 6
+  }
+}
+```
+
+Kody błędów:
+
+| Kod | Kiedy |
+|---|---|
+| `413` | Plik większy niż `MAX_UPLOAD_BYTES`. |
+| `422` | Złe base64 / pusty plik / Tika odrzuciła plik (nieobsługiwany/uszkodzony) / brak treści po ekstrakcji. |
+| `502` | `tika-server` niedostępny. |
+
+Wywołanie (plik → base64 → JSON):
+
+```bash
+B64=$(base64 -w0 pismo.pdf)
+curl -X POST http://localhost:8000/extract \
+  -H 'Content-Type: application/json' \
+  -d "{\"content_base64\": \"$B64\", \"content_type\": \"application/pdf\"}"
+```
+
+> Uwaga: śmieciowa warstwa tekstowa (PDF z glifami w Private Use Area) jeszcze **nie** jest
+> wykrywana — detekcja PUA + OCR-fallback dochodzą w kroku 2.3.5 (patrz [CLAUDE.md](CLAUDE.md)).
 
 ## Testy
 
