@@ -11,6 +11,13 @@ from app.extraction.client_tika import (
     TikaRawResult,
     TikaUnavailableError,
 )
+from app.extraction.service import (
+    EmptyExtractionError,
+    ExtractionError,
+    ExtractionMetadata,
+    ExtractionResult,
+    ExtractionService,
+)
 
 __all__ = [
     # transport
@@ -20,4 +27,11 @@ __all__ = [
     "TikaError",
     "TikaUnavailableError",
     "TikaExtractionError",
+    # domena
+    "ExtractionService",
+    "ExtractionResult",
+    "ExtractionMetadata",
+    # wyjatki domenowe ekstrakcji
+    "ExtractionError",
+    "EmptyExtractionError",
 ]

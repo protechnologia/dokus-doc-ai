@@ -3,6 +3,12 @@ testpaths = ["tests"]
 # Pakiet aplikacji `app` zyje w api/ (izolowany build context uslugi FastAPI).
 # Dodajemy api/ do sciezki, zeby testy mogly `import app`.
 pythonpath = ["api"]
+# Tryb importu testow: importlib zamiast domyslnego prepend. Powod: ten sam plik testowy
+# (np. test_tika_client.py / test_extraction_service.py) istnieje rownolegle w unit/ i
+# integration/ — bez __init__.py prepend nie rozroznia modulow o tej samej nazwie i
+# zbiorczy `pytest -m ...` wywala "import file mismatch". importlib (rekomendacja pytest)
+# obsluguje duplikaty nazw bez pakietowania katalogow testow.
+addopts = "--import-mode=importlib"
 markers = [
     "integration: wszystkie testy wymagajace uruchomionej uslugi (parasol nad ponizszymi)",
     "integration_tika: testy integracyjne uderzajace w kontener Tika",
