@@ -2,6 +2,76 @@
 
 Warstwa AI dla obiegu dokumentów DOKUS firmy Tensoft. Obsługuje ekstrakcję treści (w tym OCR) z różnorodnych plików (np. PDF, DOCX, JPG) oraz jej streszczanie za pomocą LLM (komercyjne API w chmurze, np. OpenAI, lub lokalny Bielik przez Ollama). Usługa jest całkowicie niezależna od systemu obiegu dokumentów i może być wykorzystana również do innych celów, choć jej prompty są zoptymalizowane pod zadania typowe dla obiegów, czyli dekretację i akceptację dokumentów.
 
+## Algorytm działania
+
+Pełny przebieg (endpoint `POST /extract-and-summarize`) krok po kroku:
+
+1. **Przesłanie dokumentu** — plik trafia do API jako base64 w JSON. Obsługiwane są
+   wszystkie formaty rozpoznawane przez Apache Tika (m.in. PDF, DOCX, XLSX, e-mail,
+   obrazy/skany) — [pełna lista wspieranych formatów](https://tika.apache.org/3.3.0/formats.html).
+2. **Kontrola rozmiaru** — jeżeli zdekodowany plik jest większy niż `MAX_UPLOAD_BYTES`,
+   przetwarzanie jest przerywane (HTTP `413`).
+3. **Limit stron PDF** — jeżeli to PDF, dokument jest obcinany do pierwszych
+   `MAX_OCR_PAGES` stron (strażnik zasobów przed kosztownym OCR; cięcie nie jest ciche —
+   trafia do logu i metadanych odpowiedzi).
+4. **Bezpośrednia ekstrakcja** — Apache Tika wyciąga tekst natywnie z dokumentów
+   posiadających warstwę tekstową (PDFBox, Apache POI itd.).
+5. **OCR (fallback)** — jeżeli bezpośrednia ekstrakcja nie jest możliwa lub zwraca błędne
+   wyniki (np. PDF z uszkodzoną warstwą tekstową — glify w Private Use Area), uruchamiany
+   jest OCR (Tesseract, `pol+eng`).
+6. **Truncacja pod model** — wyekstrahowany tekst jest obcinany do `LLM_MAX_INPUT_CHARS`
+   znaków (dopasowanie do okna kontekstu modelu; flaga `truncated` w metadanych).
+7. **Streszczenie** — obcięty tekst trafia do LLM (przez `LLMClient`) z prośbą o
+   wygenerowanie podsumowania pod dekretację.
+8. **Odpowiedź** — pełny tekst, podsumowanie oraz metadane obu etapów wracają do
+   użytkownika w formacie JSON.
+
+## Przykład działania
+
+Poniższy przykład pokazuje realne podsumowanie wygenerowane przez naszą usługę
+(`POST /summarize`, dostawca `openai`, model `gpt-4o-mini`) dla fikcyjnego pisma.
+
+**Wejście (treść pisma):**
+
+```
+Nadawca:
+Prof. Antoni Zagubiony
+Instytut Fizyki Niekonwencjonalnej
+ul. Paradoksalna 404
+00-001 Nibylandia
+
+Adresat:
+Ministerstwo ds. Kontroli Anomalii Czasoprzestrzennych
+Departament Pętli i Zakrzywień
+Al. Wieczności 1
+00-999 Warszawa
+
+DOTYCZY: Skargi na permanentną pętlę czasu w rejonie ul. Paradoksalnej
+
+Szanowni Państwo,
+
+Niniejszym składam oficjalną skargę na bezczynność Departamentu Pętli i Zakrzywień w sprawie usunięcia lokalnej anomalii temporalnej. Od dokładnie 15 dni każdy mój poranek zaczyna się na nowo w dniu 22 czerwca 2026 roku o godzinie 06:00, co uniemożliwia mi wyjście do pracy oraz odebranie awizo z poczty. Próby zgłoszenia problemu drogą mailową skutkują tym, że wiadomości cofają się do folderu "wersje robocze". Wzywam Urząd do natychmiastowego wysłania ekipy technicznej z generatorem antygrawitacyjnym w celu przywrócenia naturalnego biegu czasu.
+
+Z poważaniem,
+Prof. Antoni Zagubiony
+```
+
+**Wygenerowane podsumowanie** (pole `summary` w odpowiedzi):
+
+> Pismo dotyczy skargi prof. Antoniego Zagubionego na bezczynność Ministerstwa ds.
+> Kontroli Anomalii Czasoprzestrzennych w sprawie lokalnej anomalii czasowej, która
+> uniemożliwia mu normalne funkcjonowanie. Wnioskodawca wzywa do natychmiastowego
+> działania.
+>
+> - **Typ pisma:** Skarga
+> - **Nadawca:** Prof. Antoni Zagubiony
+> - **Czego dotyczy:** Bezczynność w sprawie anomalii czasowej
+> - **Termin / data:** 15 dni od 22 czerwca 2026 roku
+> - **Oczekiwana akcja:** Wysłanie ekipy technicznej z generatorem antygrawitacyjnym
+
+Streszczenie zachowuje narzucony przez prompt format hybrydowy (krótki akapit +
+wypunktowane kluczowe elementy pod dekretację) i nie zmyśla danych spoza pisma.
+
 ## Status
 
 - [x] **Krok 1 — ekstrakcja / OCR** (kontener Tika-full + pakiet `pol`)
@@ -55,34 +125,39 @@ Zmienne wykorzystywane przez **logikę aplikacji**:
 
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
-| `TIKA_URL` | `http://localhost:9998` | Adres Tiki widziany przez API. W compose: `http://tika:9998`. |
-| `TIKA_TIMEOUT_SECONDS` | `120` | Timeout ekstrakcji w Tice (OCR bywa wolny). |
-| `HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Krótki ping Tiki w `/health`. |
-| `MAX_UPLOAD_BYTES` | `20971520` | Górny limit rozmiaru zdekodowanego pliku w `POST /extract` (20 MiB); powyżej → `413`. |
-| `MAX_OCR_PAGES` | `30` | Limit stron PDF wysyłanych do Tiki (strażnik OCR). PDF powyżej N stron jest cięty do pierwszych N **przed** ekstrakcją (cięcie raportowane w metadanych). |
-| `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake` (offline, nic nie wychodzi na zewnątrz) lub `openai`. |
-| `LLM_API_KEY` | — | Klucz API dostawcy LLM (wymagany dla `openai`). |
-| `LLM_MODEL` | — | Nazwa modelu, np. `gpt-4o-mini` (wymagana dla `openai`). |
+| `TIKA_URL` | `http://localhost:9998` | Adres Apache Tika widziany przez API. Nadpisywany w `docker-compose.yml` na `http://tika:9998`. |
+| `TIKA_TIMEOUT_SECONDS` | `120` | Timeout ekstrakcji w Apache Tika (OCR bywa wolny). |
+| `HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Maksymalny czas na odpowiedź Apache Tika podczas wywoływania endpointa `/health`. |
+| `MAX_UPLOAD_BYTES` | `20971520` | Maksymalny rozmiar zdekodowanego pliku w `POST /extract` i `POST /extract-and-summarize`. Powyżej tego rozmiaru API zwraca kod błędu `413`. |
+| `MAX_OCR_PAGES` | `30` | Limit stron PDF wysyłanych do ekstrakcji. Apache Tika samodzielnie decyduje, czy zastosować zwykłą ekstrakcję, czy OCR. Limit ma ochronić przed zbyt długim czasem trwania OCR. |
+| `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake` lub `openai`. |
+| `LLM_API_KEY` | — | Klucz API dla LLM (wymagany dla `openai`). |
+| `LLM_MODEL` | — | Nazwa modelu: `gpt-4o-mini` etc. (wymagana dla `openai`). |
 | `LLM_BASE_URL` | — | Opcjonalny własny endpoint zgodny z API OpenAI (`.../v1`). |
 | `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
-| `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` (strażnik okna kontekstu). Powyżej → pierwsze N znaków + metadana `truncated`. Spójny z `MAX_OCR_PAGES`. |
+| `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` i `POST /extract-and-summarize`. Ustawienie należy dostosować do rozmiaru okna kontekstu modelu lub do optymalizacji kosztów. |
 
 ## API
 
-Bazowy adres: `http://localhost:8000` (port z `FASTAPI_PORT`). Interaktywna dokumentacja
-(Swagger UI) pod `/docs`. Dostępne endpointy: `GET /health`, `POST /extract` (czysta
-ekstrakcja), `POST /summarize` (czysta summaryzacja) oraz `POST /extract-and-summarize`
-(pełny pipeline: plik → tekst → streszczenie).
+Bazowy adres: `http://localhost:8000` (port z `FASTAPI_PORT`). 
+
+Interaktywna dokumentacja (Swagger UI) pod `/docs`.
+
+Dostępne endpointy:
+
+| Endpoint | Rola |
+|---|---|
+| `GET /health` | Zdrowie usługi (best-effort dostępność Tiki). |
+| `POST /extract` | Czysta ekstrakcja: plik → tekst + metadane. |
+| `POST /summarize` | Czysta summaryzacja: tekst → streszczenie. |
+| `POST /extract-and-summarize` | Pełny pipeline: plik → tekst → streszczenie. |
 
 Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
 ten sam identyfikator trafia do logów, co ułatwia korelację.
 
 ### `GET /health`
 
-Zdrowie usługi i — best-effort — dostępność Tiki. **Zawsze zwraca HTTP 200, gdy API
-żyje;** stan zależności jest w ciele odpowiedzi, nie w kodzie HTTP (niedostępna Tika to
-`status: degraded`, nie błąd). Pole `status`: `ok` (API i Tika zdrowe) albo `degraded`
-(API żyje, Tika niedostępna).
+Zdrowie usługi (w tym dostępność podusługi Apache Tika).
 
 Wywołanie:
 
@@ -139,7 +214,7 @@ Przykładowe żądanie (`content_base64` skrócony):
 ```
 
 Wyjście (`ExtractResponse`) — wyekstrahowany tekst + metadane (MIME, język, długość oraz
-diagnostyka OCR/stron z kroku 2.3.5):
+diagnostyka OCR i liczby stron):
 
 ```json
 {
@@ -157,7 +232,7 @@ diagnostyka OCR/stron z kroku 2.3.5):
 }
 ```
 
-Pola metadanych jakości (krok 2.3.5):
+Pola metadanych:
 
 | Pole | Opis |
 |---|---|
@@ -183,31 +258,11 @@ curl -X POST http://localhost:8000/extract \
   -d "{\"content_base64\": \"$B64\", \"content_type\": \"application/pdf\"}"
 ```
 
-#### Limity i jakość ekstrakcji
-
-Endpoint nie jest „głupim proxy" do Tiki — pilnuje zasobów i jakości wyniku (krok 2.3.5):
-
-- **Limit rozmiaru pliku (`MAX_UPLOAD_BYTES`, domyślnie 20 MiB).** Sprawdzany na
-  **zdekodowanych** bajtach, **przed** kontaktem z Tiką (nie obciążamy OCR plikami spoza
-  limitu). Powyżej → **`413`**.
-- **Limit stron PDF (`MAX_OCR_PAGES`, domyślnie 30).** PDF z większą liczbą stron jest
-  **cięty do pierwszych N przed** wysłaniem do Tiki (strażnik zasobów — wielostronicowy skan
-  potrafiłby zatkać OCR). Dotyczy **każdego** dużego PDF, nie tylko skanów. Cięcie **nie jest
-  ciche**: raportują je `pages_total` / `pages_processed` / `ocr_truncated` w metadanych, więc
-  konsument wie, że treść powstała z części dokumentu.
-- **Detekcja śmieciowej warstwy (PUA) + OCR-fallback.** Niektóre PDF-y (np. wydruki z części
-  drukarek PDF) mają warstwę tekstową, ale jej znaki to **Private Use Area** (zepsuta mapa
-  `ToUnicode`) — natywna ekstrakcja zwraca śmieć, a nie pusty wynik, i `ocrStrategy=auto` sam
-  OCR-u **nie** odpala. Serwis wykrywa taką warstwę (udział znaków PUA powyżej progu) i
-  **wymusza OCR** (`ocr_only`) na tym samym pliku, zwracając czytelną treść; w metadanych
-  `ocr_used: true`.
-
 ### `POST /summarize`
 
 Czysta summaryzacja: wejściem jest **sam tekst** (bez pliku — ekstrakcja to osobny endpoint).
 Serwis składa polski prompt pod osobę dekretującą, woła model przez `LLMClient` i zwraca
-streszczenie. Domyślny dostawca to `fake` (offline, nic nie wychodzi na zewnątrz); realny
-model włączasz przez `LLM_PROVIDER=openai` (+ klucz).
+streszczenie.
 
 Wejście (`SummarizeRequest`):
 
@@ -233,13 +288,23 @@ kluczowe elementy**) jako jeden tekst + metadane:
     "model": "gpt-4o-mini",
     "input_chars": 812,
     "truncated": false,
-    "usage": { "prompt_tokens": 250, "completion_tokens": 90, "total_tokens": 340 }
+    "usage": {
+      "prompt_tokens": 250,
+      "completion_tokens": 90,
+      "total_tokens": 340
+    }
   }
 }
 ```
 
-Metadane: `model` (kto odpowiedział), `input_chars` (długość wejścia po `strip`), `truncated`
-(czy tekst ucięto do `LLM_MAX_INPUT_CHARS`), `usage` (zużycie tokenów — diagnostyka kosztu).
+Pola metadanych:
+
+| Pole | Opis |
+|---|---|
+| `model` | Model, który wygenerował streszczenie (kto odpowiedział). |
+| `input_chars` | Długość wejścia po `strip` (w znakach). |
+| `truncated` | Czy tekst ucięto do `LLM_MAX_INPUT_CHARS`. |
+| `usage` | Zużycie tokenów (`prompt_tokens` / `completion_tokens` / `total_tokens`) — diagnostyka kosztu. |
 
 Kody błędów:
 
@@ -261,7 +326,7 @@ curl -X POST http://localhost:8000/summarize \
 
 > Długie wejście jest **ucinane** do `LLM_MAX_INPUT_CHARS` znaków (truncacja pod okno modelu,
 > z metadaną `truncated`) — to co innego niż limit stron ekstrakcji (`MAX_OCR_PAGES`). Oba
-> limity warto trzymać spójnie: patrz „Spójność limitów pipeline'u”.
+> limity warto trzymać spójnie: patrz „Limity i jakość ekstrakcji”.
 
 ### `POST /extract-and-summarize`
 
@@ -310,14 +375,23 @@ Wyjście (`SummarizeDocumentResponse`) — streszczenie + **pełny** wyekstrahow
     "model": "gpt-4o-mini",
     "input_chars": 4200,
     "truncated": false,
-    "usage": { "prompt_tokens": 1200, "completion_tokens": 90, "total_tokens": 1290 }
+    "usage": {
+      "prompt_tokens": 1200,
+      "completion_tokens": 90,
+      "total_tokens": 1290
+    }
   }
 }
 ```
 
-`text` to **pełny** tekst (przed truncacją pod okno modelu) — gdy był dłuższy niż
-`LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko początek.
-Znaczenie pól w obu blokach metadanych — patrz sekcje `POST /extract` i `POST /summarize` wyżej.
+Pola odpowiedzi:
+
+| Pole | Opis |
+|---|---|
+| `summary` | Streszczenie pod dekretację (hybryda: krótki akapit + wypunktowane kluczowe elementy). |
+| `text` | **Pełny** wyekstrahowany tekst (przed truncacją pod okno modelu); gdy był dłuższy niż `LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko początek. |
+| `extraction` | Metadane etapu ekstrakcji — pola jak w `POST /extract` wyżej. |
+| `summarization` | Metadane etapu streszczenia — pola jak w `POST /summarize` wyżej. |
 
 Kody błędów = **unia** `/extract` i `/summarize` (dokument przechodzi przez obie warstwy):
 
@@ -341,7 +415,133 @@ curl -X POST http://localhost:8000/extract-and-summarize \
 
 > Dokument przechodzi przez **wszystkie trzy** bramki naraz (`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES`
 > → `LLM_MAX_INPUT_CHARS`) — tu spójność tych limitów jest najważniejsza w praktyce: patrz
-> „Spójność limitów pipeline'u”.
+> „Limity i jakość ekstrakcji”.
+
+## Integracje
+
+Gotowi klienci do konsumowania API z innych systemów.
+
+### Klient PHP
+
+[`integrations/php/DocAiClient.php`](integrations/php/DocAiClient.php) — uniwersalny klient PHP do
+API. **Jeden samodzielny plik**, bez composera i bez autoloadera: wystarczy `require`. Transport na
+czystym cURL (zero zależności runtime; wymaga rozszerzeń `ext-curl` i `ext-json`), PHP **8.1+**.
+
+Pokrywa wszystkie cztery endpointy: `health()`, `extract()`/`extractFile()`,
+`summarize()`, `extractAndSummarize()`/`extractAndSummarizeFile()`. Konfiguracja (adres API,
+timeouty) jest wstrzykiwana przez `Config`. Błędy: `ApiException` (odpowiedź HTTP 4xx/5xx, niesie
+`statusCode`, `detail` i `X-Request-ID`) oraz `TransportException` (nie udało się dobić do API —
+sieć/timeout).
+
+Przykład wywołania (plik → tekst → streszczenie):
+
+```php
+<?php
+require __DIR__ . '/integrations/php/DocAiClient.php';
+
+use Dokus\DocAi\DocAiClient;
+use Dokus\DocAi\Config;
+use Dokus\DocAi\ApiException;
+use Dokus\DocAi\TransportException;
+
+$client = new DocAiClient(new Config('http://localhost:8000'));
+
+try {
+    $wynik = $client->extractAndSummarizeFile('/sciezka/pismo.pdf');
+
+    echo $wynik->summary;                         // streszczenie (akapit + punkty)
+    echo $wynik->extraction->contentType;         // np. 'application/pdf'
+    echo $wynik->summarization->usage->totalTokens;
+} catch (ApiException $e) {
+    // API odpowiedziało błędem HTTP — np. plik za duży (413) albo Tika niedostępna (502).
+    fprintf(STDERR, "Błąd API %d: %s\n", $e->statusCode, $e->detail ?? $e->getMessage());
+} catch (TransportException $e) {
+    // Nie udało się w ogóle dobić do API (sieć/timeout).
+    fprintf(STDERR, "Błąd transportu: %s\n", $e->getMessage());
+}
+```
+
+Sama ekstrakcja albo samo streszczanie tekstu:
+
+```php
+$ekstrakcja = $client->extractFile('/sciezka/pismo.pdf');   // POST /extract
+echo $ekstrakcja->text;
+
+$streszczenie = $client->summarize('Długa treść pisma...');  // POST /summarize
+echo $streszczenie->summary;
+```
+
+## Uwagi techniczne
+
+#### Limity i jakość ekstrakcji
+
+Usługa nie jest wyłącznie warstwą pośredniczącą do Apache Tika i LLM — na każdym etapie
+kontroluje zużycie zasobów oraz jakość wyniku, od przyjęcia pliku po przygotowanie wejścia dla
+modelu. Na przebieg przetwarzania wpływają cztery ustawienia: limit rozmiaru pliku, limit
+liczby stron PDF, próg udziału znaków PUA (powyżej którego wymuszany jest OCR-fallback) oraz
+limit znaków tekstu przekazywanego do LLM.
+
+| Ustawienie | Wartość domyślna | Wpływ |
+|---|---|---|
+| `MAX_UPLOAD_BYTES` | 20 MiB | Maksymalny rozmiar zdekodowanego pliku. Sprawdzany na zdekodowanych bajtach, przed kontaktem z Apache Tika. Powyżej → `413`. |
+| `MAX_OCR_PAGES` | 30 | Maksymalna liczba stron PDF przekazywanych do Apache Tika. Dłuższy PDF jest obcinany do pierwszych N stron przed wysłaniem (ochrona przed kosztownym OCR). |
+| Próg PUA | 30% | Udział znaków Private Use Area w warstwie tekstowej, powyżej którego warstwa jest uznawana za wadliwą i wymuszany jest OCR-fallback (`ocr_only`). |
+| `LLM_MAX_INPUT_CHARS` | 90 000 | Maksymalna liczba znaków tekstu przekazywanego do LLM (`POST /summarize` i `POST /extract-and-summarize`). Dłuższy tekst jest obcinany do pierwszych N znaków przed wysłaniem do modelu (dopasowanie do okna kontekstu). |
+
+`MAX_UPLOAD_BYTES`, `MAX_OCR_PAGES` i `LLM_MAX_INPUT_CHARS` ustawia się przez ENV (sekcja
+„Konfiguracja"). Próg PUA jest wartością wewnętrzną komponentu `PuaDetector` (nie ENV);
+separacja zmierzonych przypadków jest na tyle wyraźna (warstwa wadliwa ok. 77% wobec poprawnego
+OCR 0%), że wartość 30% ma duży margines.
+
+Uzupełnienie do powyższych ustawień:
+
+- **Limit stron nie jest cichy.** Obcięcie PDF raportują metadane `pages_total` /
+  `pages_processed` / `ocr_truncated`, więc konsument wie, że treść powstała z części
+  dokumentu. Limit obejmuje każdy duży PDF, nie tylko skany.
+- **Limit znaków do LLM to truncacja pod okno modelu, nie limit ekstrakcji.** Działa na tekście
+  już wyekstrahowanym, tuż przed streszczeniem, dlatego pole `text` w odpowiedzi zawiera pełną
+  treść, a metadana `truncated` wskazuje, czy model otrzymał jedynie jej początek.
+- **Detekcja wadliwej warstwy tekstowej (PUA).** Niektóre PDF-y (np. wydruki z części drukarek
+  PDF) mają warstwę tekstową, ale jej znaki należą do Private Use Area (uszkodzona mapa
+  `ToUnicode`). Ekstrakcja natywna zwraca wtedy nieczytelny tekst zamiast pustego wyniku, a
+  `ocrStrategy=auto` nie uruchamia OCR. Serwis wykrywa taką warstwę i wymusza OCR (`ocr_only`)
+  na tym samym pliku, zwracając czytelną treść; w metadanych `ocr_used: true`.
+
+Trzy limity liczbowe (`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS`) działają na
+kolejnych etapach tego samego dokumentu, dlatego warto utrzymywać je w jednym rzędzie wielkości
+— w przeciwnym razie jeden etap wykonuje pracę, którą następny i tak odrzuca:
+
+- **Strony a znaki.** Jedna strona A4 to około 3000 znaków, więc `MAX_OCR_PAGES` stron daje
+  mniej więcej `MAX_OCR_PAGES × 3000` znaków. Jeżeli wartość ta znacznie przekracza
+  `LLM_MAX_INPUT_CHARS`, OCR przetwarza strony, których model i tak nie otrzyma — należy wtedy
+  obniżyć `MAX_OCR_PAGES` albo podnieść `LLM_MAX_INPUT_CHARS`. Przykładowo
+  `LLM_MAX_INPUT_CHARS=50000` odpowiada około 17 stronom, więc przy `MAX_OCR_PAGES=30` OCR
+  obejmuje około 13 stron ponad potrzebę.
+- **Rozmiar a strony.** `MAX_UPLOAD_BYTES` powinien swobodnie pomieścić dokument o
+  `MAX_OCR_PAGES` stronach (skan potrafi zajmować kilka MB), w przeciwnym razie pliki są
+  odrzucane, zanim limit stron zdąży zadziałać.
+
+Przy zmianie modelu na mniejszy (np. Bielik — węższe okno kontekstu, a więc niższy
+`LLM_MAX_INPUT_CHARS`) zwykle obniża się również `MAX_OCR_PAGES`, aby etapy pozostały spójne.
+
+#### Rozmiar kontekstu wybranych modeli
+
+Orientacyjne okna kontekstu w przeliczeniu na strony A4 (przyjmując ~800 tokenów/stronę po
+polsku; realnie 750–1000):
+
+| Model | Okno (tokeny) | ~strony A4 (PL) | Uwaga |
+|---|---:|---:|---|
+| **gpt-4o-mini** | 128 000 | ~160 | obecny domyślny (dev) |
+| gpt-4o | 128 000 | ~160 | |
+| gpt-4.1 / -mini / -nano | 1 047 576 | ~1 300 | okno 1M |
+| o3 / o3-mini | 200 000 | ~250 | modele „reasoning" |
+| gpt-3.5-turbo | 16 385 | ~20 | starszy |
+| **Bielik-11B-v2.x** | 32 768 | ~40 | cel on-prem (Ollama) |
+| Bielik-7B v1 | 4 096 | ~5 | starsza wersja |
+
+> „Strony" = **całe** okno (wejście + system prompt + odpowiedź). Użyteczne wejście pod
+> dokument jest mniejsze — stąd `LLM_MAX_INPUT_CHARS` z zapasem. Strona gęsta (tabele,
+> pisma prawnicze) zajmuje więcej tokenów niż luźny tekst.
 
 ## Testy
 
@@ -384,78 +584,27 @@ nie jest `openai` lub brak klucza.
 
 ### Zmiana modelu komercyjnego (OpenAI) na lokalny Bielik
 
-Cel projektu to docelowo **żadne dane nie opuszczają urzędu** — stąd plan przejścia
-komercyjne API → Bielik na RunPod → Bielik on-prem. Z założenia jest to **zmiana
-konfiguracji `LLMClient`, nie logiki biznesowej** (zasada „abstrakcja dostawcy LLM" z
-[CLAUDE.md](CLAUDE.md)). Ollama wystawia API **zgodne z OpenAI** (`/v1`), więc na happy
-path wystarcza istniejący `OpenAILLMClient` z innym `LLM_BASE_URL` — bez nowego klienta.
-
-> Uwaga: kontener `llm` (Ollama + Bielik) dochodzi w **fazach 4–5**, a `LLM_MAX_INPUT_CHARS`
-> w **kroku 2.4** (summaryzacja). Poniższe kroki to docelowy runbook — elementy oznaczone
-> *[planowane]* nie są jeszcze w repo.
-
-1. **Postaw Bielika lokalnie (Ollama).** *[planowane: usługa `llm` w `docker-compose`]*
+1. **Postaw Bielika lokalnie (Ollama).**
    ```bash
-   ollama pull SpeakLeash/bielik-11b-v2.2-instruct   # albo nowszy wariant v2.x / v3
-   ollama serve                                       # wystawia http://localhost:11434
+   ollama pull SpeakLeash/bielik-11b-v2.2-instruct # albo nowszy wariant v2.x / v3
+   ollama serve                                    # wystawia http://localhost:11434
    ```
 
-2. **Przełącz dostawcę przez ENV** (w `.env`) — bez ruszania kodu:
+2. **Przełącz dostawcę w `.env`**
    ```env
-   LLM_PROVIDER=openai                                  # OpenAILLMClient (Ollama jest OpenAI-compat)
-   LLM_BASE_URL=http://llm:11434/v1                     # endpoint Ollamy (.../v1); na hoście: http://localhost:11434/v1
-   LLM_MODEL=SpeakLeash/bielik-11b-v2.2-instruct        # tag modelu z Ollamy
-   LLM_API_KEY=ollama                                   # dowolny niepusty — SDK wymaga, Ollama ignoruje
+   LLM_PROVIDER=openai                           # (Ollama jest OpenAI-compat)
+   LLM_BASE_URL=http://llm:11434/v1              # endpoint Ollamy
+   LLM_MODEL=SpeakLeash/bielik-11b-v2.2-instruct # tag modelu z Ollamy
+   LLM_API_KEY=ollama                            # SDK wymaga, Ollama ignoruje
    ```
 
-3. **Dostosuj próg truncacji wejścia `LLM_MAX_INPUT_CHARS`.** *[ustawienie z kroku 2.4]*
-   Bielik ma **4× mniejsze okno kontekstu** niż `gpt-4o-mini` (32k vs 128k tokenów — patrz
-   tabela niżej), więc próg liczony w **znakach** trzeba obniżyć i ustawić **pod najmniejszy
-   docelowy model**, zostawiając zapas na system prompt + samą odpowiedź. Inaczej po
-   migracji pipeline zacznie ucinać/wywalać się na dokumentach, które wcześniej przechodziły.
+3. **Dostosuj `LLM_MAX_INPUT_CHARS` w `.env`**
    ```env
-   # orientacyjnie dla Bielika (~32k tok.): rzędu kilkudziesięciu tys. znaków (np. 50000),
-   # z zapasem na prompt i wyjście. Dla gpt-4o-mini mogło być znacznie więcej.
+   # orientacyjnie dla Bielika (~32k tok.):
    LLM_MAX_INPUT_CHARS=50000
    ```
 
 4. **Restart i weryfikacja:**
    ```bash
    docker compose up -d
-   curl http://localhost:8000/health                  # API żyje
-   # smoke summaryzacji (gdy /summarize gotowe w kroku 2.4)
    ```
-
-**Okna kontekstu — strony A4** (przyjmując ~800 tokenów/stronę po polsku; realnie 750–1000):
-
-| Model | Okno (tokeny) | ~strony A4 (PL) | Uwaga |
-|---|---:|---:|---|
-| **gpt-4o-mini** | 128 000 | ~160 | obecny domyślny (dev) |
-| gpt-4o | 128 000 | ~160 | |
-| gpt-4.1 / -mini / -nano | 1 047 576 | ~1 300 | okno 1M |
-| o3 / o3-mini | 200 000 | ~250 | modele „reasoning" |
-| gpt-3.5-turbo | 16 385 | ~20 | starszy |
-| **Bielik-11B-v2.x** | 32 768 | ~40 | cel on-prem (Ollama) |
-| Bielik-7B v1 | 4 096 | ~5 | starsza wersja |
-
-> „Strony" = **całe** okno (wejście + system prompt + odpowiedź). Użyteczne wejście pod
-> dokument jest mniejsze — stąd `LLM_MAX_INPUT_CHARS` z zapasem. Strona gęsta (tabele,
-> pisma prawnicze) zje więcej tokenów niż luźny tekst.
-
-#### Spójność limitów pipeline'u
-
-`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS` to trzy bramki na kolejnych
-etapach **tego samego dokumentu** (upload → ekstrakcja → streszczenie). Warto trzymać je w
-jednym rzędzie wielkości — inaczej jeden etap robi pracę, którą następny i tak utnie:
-
-- **Strony ↔ znaki.** ~1 strona A4 ≈ ~3000 znaków, więc `MAX_OCR_PAGES` stron daje
-  ~`MAX_OCR_PAGES × 3000` znaków tekstu. Jeśli to **dużo więcej** niż `LLM_MAX_INPUT_CHARS`,
-  OCR-ujemy (kosztownie) strony, których LLM i tak nie zobaczy — wtedy albo obniż
-  `MAX_OCR_PAGES`, albo podnieś `LLM_MAX_INPUT_CHARS`. Przykład: `LLM_MAX_INPUT_CHARS=50000`
-  ≈ ~17 stron, więc przy `MAX_OCR_PAGES=30` marnujemy OCR ~13 stron.
-- **Rozmiar ↔ strony.** `MAX_UPLOAD_BYTES` powinien wygodnie pomieścić dokument o
-  `MAX_OCR_PAGES` stronach (skan bywa kilka MB) — inaczej odrzucasz pliki **zanim** limit
-  stron w ogóle zadziała.
-
-Przy migracji na Bielika (mniejsze okno → mniejszy `LLM_MAX_INPUT_CHARS`) zwykle **w dół**
-idzie też `MAX_OCR_PAGES`, żeby etapy zostały spójne.

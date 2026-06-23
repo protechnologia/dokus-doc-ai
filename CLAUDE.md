@@ -66,7 +66,9 @@ Tesseract — OCR działa po doinstalowaniu pakietu `pol`, bez osobnego kontener
 2. **[ZROBIONE i ZWERYFIKOWANE] API na FastAPI** — przyjmuje dokument, woła extract, składa
    prompt, woła LLM, zwraca wynik. Endpointy: `/health`, `/extract`, `/summarize`,
    `/extract-and-summarize` (pełny pipeline). Szczegóły: sekcje „Plan kroku 2.1–2.5".
-3. **Integracja z DOKUS** — ESOD wysyła oryginał, dostaje zwrotnie podsumowanie.
+3. **[W TOKU] Integracja z DOKUS** — ESOD wysyła oryginał, dostaje zwrotnie podsumowanie.
+   Pierwszy element (strona konsumenta): uniwersalny **klient PHP** w `integrations/php/`.
+   Szczegóły: sekcja „Stan kroku 3".
 4. **Migracja LLM na RunPod** — maszyna z GPU + własny model w chmurze.
 5. **Migracja LLM na własną maszynę** — GPU w urzędzie, Ollama + Bielik lokalnie.
 
@@ -615,6 +617,43 @@ polskim streszczeniem hybrydowym + zagnieżdżonymi metadanymi obu etapów (`ext
 
 Mapowanie błędów na kody HTTP (4xx/5xx zamiast gołych wyjątków), minimalne logowanie
 z request-id (to NIE monitoring/Zabbix), testy zgodnie z konwencją markerów.
+
+## Stan kroku 3 — integracja z DOKUS (W TOKU)
+
+Pierwszy artefakt: **uniwersalny klient PHP** konsumujący API (strona, z której DOKUS — albo
+dowolny inny system — woła nasze endpointy). To jeszcze NIE pełna integracja (DOKUS realnie
+wysyłający oryginał i odbierający streszczenie); to budulec po stronie klienta.
+
+- `integrations/php/DocAiClient.php` — **JEDEN samodzielny plik**, namespace `Dokus\DocAi`,
+  wszystkie klasy razem (klient + DTO + wyjątki). Pokrywa cztery endpointy: `health()`,
+  `extract()`/`extractFile()`, `summarize()`, `extractAndSummarize()`/`extractAndSummarizeFile()`.
+  Wejście base64-w-JSON jak w API; warianty `*File()` same czytają plik i kodują base64.
+- **Decyzje (świadome, z użytkownikiem):** bez `composer.json` i bez autoloadera (drop-in przez
+  `require`, zero ryzyka konfliktu zależności w cudzym ESOD-zie); transport na **czystym cURL**
+  (zero zależności runtime, `ext-curl`+`ext-json`); **PHP 8.1+** (readonly, named args).
+  Komentarze klienta **uniwersalne** — bez odniesień do roadmapy projektu i bez nazwy DOKUS
+  (klient ma być produktem ogólnym; nazwa `dokus-doc-ai` to tylko nazwa API, do którego gada).
+- **Architektura (symetria do serwera, transport-vs-domena):** `CurlTransport` izoluje cURL i
+  operuje na surowych stringach (nie zna formatu ciała) — analogicznie do `TikaClient` izolującego
+  httpx. Cały kontrakt „to API mówi JSON-em" (kodowanie żądania, `Content-Type`, dekodowanie
+  odpowiedzi) żyje w `DocAiClient`. Konfiguracja (`Config`: adres + timeouty, domyślnie 180 s pod
+  sekwencyjny OCR+LLM) **wstrzykiwana**, nie na sztywno. Błędy: `DocAiException` (baza) →
+  `TransportException` (nie dobiliśmy do API) / `ApiException` (odpowiedź 4xx/5xx; niesie
+  `statusCode`, `detail`, `X-Request-ID`; `isClientError()`/`isServerError()`).
+- Dokumentacja: README → sekcja „Integracje → Klient PHP" (opis + przykład wywołania).
+
+**Weryfikacja (2026-06-23) — przeszła:** realny PHP 8.2.29 (`C:\Php82`). `php -l` → bez błędów;
+`curl`+`json` obecne. Smoke test **16/16 PASS**: część bezsieciowa (mapowanie DTO, `Config`,
+`ApiException::fromResponse` na nie-JSON → `detail=null` + surowe body) oraz realne, darmowe (bez
+LLM) wywołania przeciw działającemu kontenerowi — `GET /health` (ok, `tika:ok`), `POST /extract`
+(text/plain → tekst + metadane), `POST /extract` ze złym base64 → `ApiException` 422 z realnym
+`detail` FastAPI. Endpointy LLM (`/summarize`, `/extract-and-summarize`) świadomie nie wołane w
+smoke (koszt/egres) — ścieżka wyjątków LLM pokryta jednostkowo przez `ApiException::fromResponse`.
+
+> **Znane ograniczenie (do decyzji, gdyby trzeba czystych testów bez sieci):** `CurlTransport` jest
+> `final`, więc wstrzykiwany `?CurlTransport` w `DocAiClient` nie podmienia się na atrapę — pełne
+> mapowanie w `requestJson()` testowane przez realne 422, nie mockiem. Czysty mock wymagałby
+> wydzielenia małego interfejsu transportu. Nie robione bez potrzeby.
 
 ## Świadomie pominięte na teraz (NIE dodawać bez pytania)
 
