@@ -1,7 +1,7 @@
 # DOKUS Doc AI — nakladka GPU dla uslugi `ollama` (Ollama + Bielik).
 # Dziedziczy warstwe Bielika (a przez nia baze) przez `include`, wiec podnosi caly stack z GPU
 # JEDNYM plikiem — wylacznie na hoscie z GPU NVIDIA i zainstalowanym nvidia-container-toolkit
-# (faza 4-5: RunPod / maszyna on-prem z GPU):
+# (maszyna on-prem z GPU):
 #   docker compose -f docker-compose.bielik.gpu.yml up -d
 #
 # UWAGA: na maszynie BEZ runtime nvidia ta rezerwacja TWARDO wywala start kontenera

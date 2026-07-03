@@ -2,6 +2,18 @@
 
 Warstwa AI dla obiegu dokumentów DOKUS firmy Tensoft. Obsługuje ekstrakcję treści (w tym OCR) z różnorodnych plików (np. PDF, DOCX, JPG) oraz jej streszczanie za pomocą LLM (komercyjne API w chmurze, np. OpenAI, lub lokalny Bielik przez Ollama). Usługa jest całkowicie niezależna od systemu obiegu dokumentów i może być wykorzystana również do innych celów, choć jej prompty są zoptymalizowane pod zadania typowe dla obiegów, czyli dekretację i akceptację dokumentów.
 
+## Stack
+
+| Warstwa | Technologia |
+|---|---|
+| Konteneryzacja | Docker + Docker Compose |
+| OCR / ekstrakcja | Apache Tika (`apache/tika:3.3.0.0-full`, tag przypięty) + pakiet językowy `pol` (w środku: Tesseract, PDFBox, POI) |
+| API / orkiestracja | FastAPI + Uvicorn (Python 3.12+) |
+| Walidacja / konfiguracja | Pydantic + pydantic-settings (config z ENV) |
+| Klient LLM | SDK `openai` ukryte za własnym interfejsem `LLMClient` |
+| LLM — komercyjne | Komercyjne API (rekomendacja: Azure OpenAI, region UE) |
+| LLM — lokalne | Ollama + Bielik (maszyna w urzędzie z GPU) |
+
 ## Algorytm działania
 
 Pełny przebieg (endpoint `POST /extract-and-summarize`) krok po kroku:
@@ -93,7 +105,7 @@ docker compose up -d
 # + lokalny Bielik na CPU (dev / serwer bez GPU):
 docker compose -f docker-compose.bielik.yml up -d
 
-# + Bielik na GPU (maszyna z NVIDIA + nvidia-container-toolkit — faza 4-5):
+# + Bielik na GPU (maszyna z NVIDIA + nvidia-container-toolkit — on-prem):
 docker compose -f docker-compose.bielik.gpu.yml up -d
 ```
 
