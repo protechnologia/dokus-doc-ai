@@ -26,15 +26,26 @@ services:
     depends_on:
       tika:
         condition: service_healthy
+    # Wszystkie pokretla Settings przekazujemy JAWNIE — compose nie wstrzykuje .env do
+    # kontenera automatycznie (.env sluzy tylko interpolacji ${...}). Brak => default z
+    # api/app/config.py. Grupy jak w config.py / .env.example.
     environment:
-      # Tika widziana z sieci compose pod nazwa uslugi, nie przez localhost.
+      # --- Ekstrakcja ---
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-20971520}"
+      MAX_OCR_PAGES: "${MAX_OCR_PAGES:-30}"
+      # --- Tika ---
       TIKA_URL: "http://tika:9998"
-      # Dostawca LLM (klient w 2.2). Domyslnie 'fake' — nic nie wychodzi na zewnatrz.
+      TIKA_TIMEOUT_SECONDS: "${TIKA_TIMEOUT_SECONDS:-120}"
+      HEALTH_CHECK_TIMEOUT_SECONDS: "${HEALTH_CHECK_TIMEOUT_SECONDS:-3}"
+      # --- Dostawca LLM (domyslnie 'fake' — nic nie wychodzi na zewnatrz) ---
       LLM_PROVIDER: "${LLM_PROVIDER:-fake}"
       LLM_API_KEY: "${LLM_API_KEY:-}"
       LLM_BASE_URL: "${LLM_BASE_URL:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_API_VERSION: "${LLM_API_VERSION:-}"
+      LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-60}"
+      # --- Summaryzacja ---
+      LLM_MAX_INPUT_CHARS: "${LLM_MAX_INPUT_CHARS:-90000}"
     ports:
       - "${FASTAPI_PORT:-8000}:8000"
     healthcheck:
