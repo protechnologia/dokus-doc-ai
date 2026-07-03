@@ -18,9 +18,8 @@ include:
 services:
   # --- Silnik LLM: Ollama serwujaca Bielika (endpoint zgodny z API OpenAI pod /v1) --------
   ollama:
-    # TODO(krok dalej): przypiac konkretny tag po pierwszym `pull` (konwencja projektu: piny,
-    # nie `latest` — jak apache/tika:3.3.0.0-full). `latest` tymczasowo, do weryfikacji.
-    image: ollama/ollama:latest
+    # Tag przypiety (konwencja projektu: piny, nie `latest` — jak apache/tika:3.3.0.0-full).
+    image: ollama/ollama:0.31.1
     container_name: dokus-ollama
     restart: unless-stopped
     # Modele w nazwanym wolumenie — raz sciagniety Bielik przezywa restart/rebuild kontenera

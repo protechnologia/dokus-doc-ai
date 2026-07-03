@@ -187,10 +187,12 @@ Warstwy dziedziczą przez **`include`** (child→parent), więc **jeden** `-f` p
    Ollama ją ignoruje), z wymogiem `LLM_MODEL` + `LLM_BASE_URL` → `LLMConfigError` gdy brak.
    Wariant A (`openai` + atrapa klucza) nadal działa jako alternatywa.
 
-**Świadome długi (następne kroki):**
-- Przypiąć tag obrazu `ollama/ollama` (teraz `latest`).
-- Wybrać i `pull` mniejszego Bielika pod dev/CPU (cel: 4.5B v3.0) → do `.env`, nie do compose.
-- Weryfikacja end-to-end: FastAPI z `LLM_PROVIDER=ollama` → Bielik streszcza realny dokument.
+**Zweryfikowane end-to-end (2026-07-03):** obraz przypięty `ollama/ollama:0.31.1`; do kontenera
+pobrany **Bielik 4.5B v3.0 Q8_0** (5.1 GB; okno 8K — mniejsze niż 32K w 11B); `POST
+/extract-and-summarize` przez FastAPI (`LLM_PROVIDER=ollama`) zwrócił poprawne polskie
+streszczenie z realnym `usage`/`model` w metadanych (~1,5 min cold-start na CPU tej maszyny — bez
+GPU wolno). Uwaga jakościowa: 4.5B trzyma format hybrydowy luźno (akapit, słabo wypunktowuje) —
+pełny format da 11B/GPU (faza 5).
 
 ## Świadomie pominięte na teraz (NIE dodawać bez pytania)
 
