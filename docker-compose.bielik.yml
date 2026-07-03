@@ -1,0 +1,44 @@
+# DOKUS Doc AI — warstwa LLM (Ollama + Bielik).
+# Nakladka na docker-compose.yml: doklada WYLACZNIE usluge `ollama` (silnik). Przelaczenie
+# FastAPI na Bielika NIE dzieje sie tutaj — robi je jawnie .env (LLM_PROVIDER/LLM_BASE_URL/
+# LLM_MODEL), ktore baza i tak przekazuje do `fastapi`. Dzieki temu dolozenie tego pliku nie
+# zmienia po cichu konfiguracji LLM (zasada: config wylacznie przez ENV, bez magii warstw).
+#
+# Uruchomienie (dev / serwer BEZ GPU — Bielik liczy na CPU) — JEDEN plik:
+#   docker compose -f docker-compose.bielik.yml up -d
+# Ta warstwa dziedziczy baze przez `include` (nizej), wiec pojedynczy `-f` podnosi caly stack
+# (tika + fastapi + ollama) — bez multi-`-f` i bez COMPOSE_FILE. Domyslny `docker compose up -d`
+# (sama baza) tej uslugi NIE startuje — tryb `fake` zostaje lekki; usluga `ollama` zyje wylacznie
+# w tej warstwie, wiec nie trzeba profilu.
+
+# Dziedziczenie warstwy bazowej (tika + fastapi) — deklaratywnie w YAML, zamiast powtarzania `-f`.
+include:
+  - docker-compose.yml
+
+services:
+  # --- Silnik LLM: Ollama serwujaca Bielika (endpoint zgodny z API OpenAI pod /v1) --------
+  ollama:
+    # TODO(krok dalej): przypiac konkretny tag po pierwszym `pull` (konwencja projektu: piny,
+    # nie `latest` — jak apache/tika:3.3.0.0-full). `latest` tymczasowo, do weryfikacji.
+    image: ollama/ollama:latest
+    container_name: dokus-ollama
+    restart: unless-stopped
+    # Modele w nazwanym wolumenie — raz sciagniety Bielik przezywa restart/rebuild kontenera
+    # (inaczej kazdy `up` ciagnalby model od nowa, rzedu GB).
+    volumes:
+      - ollama-models:/root/.ollama
+    # Port na host TYLKO pod debug/pull z hosta; FastAPI gada po sieci compose (ollama:11434).
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    healthcheck:
+      # `ollama list` odpowiada dopiero, gdy serwer wstal — wystarcza za sygnal zdrowia.
+      # Nie sprawdzamy zaladowania modelu: laduje sie leniwie przy pierwszym zapytaniu.
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# Nazwany wolumen na modele Ollamy (uzyty wyzej — definicja wymagana).
+volumes:
+  ollama-models:

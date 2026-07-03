@@ -72,30 +72,6 @@ Prof. Antoni Zagubiony
 Streszczenie zachowuje narzucony przez prompt format hybrydowy (krótki akapit +
 wypunktowane kluczowe elementy pod dekretację) i nie zmyśla danych spoza pisma.
 
-## Status
-
-- [x] **Krok 1 — ekstrakcja / OCR** (kontener Tika-full + pakiet `pol`)
-- [x] **Krok 2 — API na FastAPI** (plan: [CLAUDE.md](CLAUDE.md))
-  1. [x] Zalążek FastAPI (`Settings`, `/health`, Dockerfile + usługa `fastapi`, szkielet testów)
-  2. [x] `LLMClient` (interfejs + implementacja OpenAI + `FakeLLMClient` + fabryka)
-  3. [x] API: czysta ekstrakcja
-     1. [x] `TikaClient` — transport do Tiki (surowy tekst + metadane, mapowanie błędów Tiki na wyjątki)
-     2. [x] `ExtractionService` — domena: normalizacja + metadane (happy path; jakość PUA / OCR-fallback / limit stron → ppkt 5)
-     3. [x] `POST /extract` — wejście base64 (JSON), wyjście tekst + metadane, mapowanie błędów na kody HTTP
-     4. [x] Config (`MAX_UPLOAD_BYTES`) + dokumentacja `POST /extract`
-     5. [x] Jakość ekstrakcji — detekcja PUA + OCR-fallback + limit stron (`MAX_OCR_PAGES`)
-  4. [x] API: czysta summaryzacja
-     1. [x] `SummarizationService` — domena: system prompt + szablon + truncacja + wołanie `LLMClient`
-     2. [x] `POST /summarize` — wejście tekst, wyjście streszczenie + metadane, mapowanie `LLMError` → HTTP
-     3. [x] Config (`LLM_MAX_INPUT_CHARS`) + dokumentacja
-  5. [x] API: pełny pipeline
-     1. [x] `PipelineService` — orkiestrator: ekstrakcja → streszczenie (kompozycja serwisów)
-     2. [x] `POST /extract-and-summarize` — wejście base64, wyjście streszczenie + metadane obu etapów, mapowanie błędów (unia)
-     3. [x] Dokumentacja (sekcja endpointu + przykład)
-- [ ] Krok 3 — integracja z DOKUS
-- [ ] Krok 4 — migracja LLM na RunPod
-- [ ] Krok 5 — migracja LLM na własną maszynę
-
 ## Uruchomienie
 
 Wymagania: Docker + Docker Compose.
@@ -105,6 +81,27 @@ cp .env.example .env  # nadpisz domyślną konfigurację
 docker compose build  # zbuduj obrazy wszystkich usług
 docker compose up -d  # uruchom całą kompozycję
 ```
+
+Domyślny `docker compose up -d` uruchamia tryb podstawowy (Tika + API, dostawca LLM `fake` —
+offline). Lokalny model **Bielik (Ollama)** to **osobne warstwy compose**, które przez `include`
+dziedziczą warstwę niższą — dlatego wybierasz je **jednym** `-f`:
+
+```bash
+# tryb podstawowy (fake, offline) — domyślny, lekki:
+docker compose up -d
+
+# + lokalny Bielik na CPU (dev / serwer bez GPU):
+docker compose -f docker-compose.bielik.yml up -d
+
+# + Bielik na GPU (maszyna z NVIDIA + nvidia-container-toolkit — faza 4-5):
+docker compose -f docker-compose.bielik.gpu.yml up -d
+```
+
+Usługa `ollama` istnieje wyłącznie w warstwie `docker-compose.bielik.yml` (nie w bazie), więc
+tryb `fake` pozostaje lekki — nie ma potrzeby profili. Warstwa GPU jest osobna, bo aktywna
+rezerwacja GPU **twardo wywala** start kontenera na maszynie bez runtime nvidia. Przełączenie API
+na Bielika robi się osobno, **jawnie w `.env`** (patrz „Zmiana dostawcy LLM na lokalnego
+Bielika").
 
 ## Konfiguracja
 
@@ -120,6 +117,7 @@ Zmienne wykorzystywane przez **Docker Compose**:
 |---|---|---|
 | `TIKA_PORT` | `9998` | Port Apache Tika wystawiony na hoście. |
 | `FASTAPI_PORT` | `8000` | Port API wystawiony na hoście. |
+| `OLLAMA_PORT` | `11434` | Port kontenera Ollamy (warstwa `docker-compose.bielik.yml`) wystawiony na hoście — pod debug/`pull`. |
 
 Zmienne wykorzystywane przez **logikę aplikacji**:
 
@@ -582,29 +580,62 @@ nie jest `openai` lub brak klucza.
 
 ## Typowe procedury
 
-### Zmiana modelu komercyjnego (OpenAI) na lokalny Bielik
+### Zmiana dostawcy LLM na lokalnego Bielika (Ollama, maszyna z GPU)
 
-1. **Postaw Bielika lokalnie (Ollama).**
+Zakłada świeżą maszynę **Ubuntu/Debian** z GPU NVIDIA.
+
+1. **Zainstaluj Docker Engine + Compose:**
    ```bash
-   ollama pull SpeakLeash/bielik-11b-v2.2-instruct # albo nowszy wariant v2.x / v3
-   ollama serve                                    # wystawia http://localhost:11434
+   curl -fsSL https://get.docker.com | sh
    ```
 
-2. **Przełącz dostawcę w `.env`**
-   ```env
-   LLM_PROVIDER=openai                           # (Ollama jest OpenAI-compat)
-   LLM_BASE_URL=http://llm:11434/v1              # endpoint Ollamy
-   LLM_MODEL=SpeakLeash/bielik-11b-v2.2-instruct # tag modelu z Ollamy
-   LLM_API_KEY=ollama                            # SDK wymaga, Ollama ignoruje
+2. **Zainstaluj sterownik NVIDIA** (jeśli `nvidia-smi` nie działa) i zweryfikuj:
+   ```bash
+   sudo ubuntu-drivers autoinstall   # następnie reboot
+   nvidia-smi                        # musi wypisać GPU
    ```
 
-3. **Dostosuj `LLM_MAX_INPUT_CHARS` w `.env`**
+3. **Zainstaluj NVIDIA Container Toolkit i podłącz go do Dockera** ([dokumentacja](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)):
+   ```bash
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+     | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+   ```
+
+4. **Sprawdź GPU w kontenerze:**
+   ```bash
+   sudo docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+   ```
+
+5. **Podnieś stack** (baza + Bielik + GPU jednym plikiem):
+   ```bash
+   docker compose -f docker-compose.bielik.gpu.yml up -d
+   ```
+
+6. **Zaciągnij model do kontenera:**
+   ```bash
+   docker compose -f docker-compose.bielik.gpu.yml \
+     exec ollama ollama pull SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M
+   ```
+
+7. **Przełącz dostawcę w `.env`:**
    ```env
-   # orientacyjnie dla Bielika (~32k tok.):
+   LLM_PROVIDER=openai
+   LLM_BASE_URL=http://ollama:11434/v1
+   LLM_MODEL=SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M
+   LLM_API_KEY=ollama
+   ```
+
+8. **Dostosuj `LLM_MAX_INPUT_CHARS` w `.env`** pod węższe okno Bielika (~32k tok.):
+   ```env
    LLM_MAX_INPUT_CHARS=50000
    ```
 
-4. **Restart i weryfikacja:**
+9. **Restart:**
    ```bash
-   docker compose up -d
+   docker compose -f docker-compose.bielik.gpu.yml up -d
    ```
