@@ -48,10 +48,10 @@ class Settings(BaseSettings):
     # --- Dostawca LLM (klient: app.llm, krok 2.2) ---
     # Faza 1 = komercyjne API. Na dev/test domyslnie 'fake' — nic nie wychodzi na
     # zewnatrz (spojne z zasada "prywatnosc pierwsza").
-    llm_provider: str = "fake"           # 'fake' (offline) lub 'openai'
-    llm_api_key: str | None = None       # wymagany dla 'openai', np. "sk-proj-..."
-    llm_base_url: str | None = None      # opcjonalny wlasny endpoint zgodny z API OpenAI (.../v1)
-    llm_model: str | None = None         # wymagany dla 'openai', np. "gpt-4o-mini"
+    llm_provider: str = "fake"           # 'fake' (offline), 'openai' lub 'ollama' (lokalny Bielik)
+    llm_api_key: str | None = None       # wymagany dla 'openai'; dla 'ollama' zbedny (atrapa)
+    llm_base_url: str | None = None      # endpoint zgodny z API OpenAI (.../v1); wymagany dla 'ollama'
+    llm_model: str | None = None         # wymagany dla 'openai'/'ollama', np. "gpt-4o-mini" / tag Bielika
     llm_timeout_seconds: float = 60.0    # timeout wolania LLM [s]
 
     # --- Summaryzacja (domena: app.summarization, krok 2.4) ---

@@ -117,7 +117,7 @@ Zmienne wykorzystywane przez **Docker Compose**:
 |---|---|---|
 | `TIKA_PORT` | `9998` | Port Apache Tika wystawiony na hoście. |
 | `FASTAPI_PORT` | `8000` | Port API wystawiony na hoście. |
-| `OLLAMA_PORT` | `11434` | Port kontenera Ollamy (warstwa `docker-compose.bielik.yml`) wystawiony na hoście — pod debug/`pull`. |
+| `OLLAMA_PORT` | `11434` | Port kontenera Ollamy (warstwa `docker-compose.bielik.yml`) wystawiony na hoście — tylko pod debug z hosta (np. `curl localhost:11434/api/tags`). FastAPI go NIE używa: gada z Ollamą po sieci compose (`http://ollama:11434`). |
 
 Zmienne wykorzystywane przez **logikę aplikacji**:
 
@@ -622,12 +622,11 @@ Zakłada świeżą maszynę **Ubuntu/Debian** z GPU NVIDIA.
      exec ollama ollama pull SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M
    ```
 
-7. **Przełącz dostawcę w `.env`:**
+7. **Przełącz dostawcę w `.env`** (klucz zbędny — Ollama go ignoruje):
    ```env
-   LLM_PROVIDER=openai
+   LLM_PROVIDER=ollama
    LLM_BASE_URL=http://ollama:11434/v1
    LLM_MODEL=SpeakLeash/bielik-11b-v3.0-instruct:Q4_K_M
-   LLM_API_KEY=ollama
    ```
 
 8. **Dostosuj `LLM_MAX_INPUT_CHARS` w `.env`** pod węższe okno Bielika (~32k tok.):

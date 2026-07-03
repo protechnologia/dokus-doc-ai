@@ -182,14 +182,15 @@ Warstwy dziedziczą przez **`include`** (child→parent), więc **jeden** `-f` p
 3. **`include`, nie multi-`-f`/`COMPOSE_FILE`.** Dziedziczenie deklaratywne w YAML, jeden `-f`,
    zero ukrytego stanu w env. Odrzucone: kotwice YAML (tylko w obrębie jednego pliku), `extends`
    (per-usługa, ignoruje `depends_on`).
-4. **Provider docelowo = `ollama` w fabryce (wariant B), jeszcze NIE zrobiony.** Do tego czasu
-   działa wariant A: `LLM_PROVIDER=openai` + `LLM_BASE_URL=http://ollama:11434/v1` +
-   `LLM_API_KEY=ollama` (atrapa; SDK wymaga wartości, Ollama ją ignoruje).
+4. **Provider = `ollama` w fabryce (wariant B) — ZROBIONE.** `LLM_PROVIDER=ollama` buduje
+   `OpenAILLMClient` na Ollamę **bez wymogu klucza** (atrapa `"ollama"`; SDK wymaga wartości,
+   Ollama ją ignoruje), z wymogiem `LLM_MODEL` + `LLM_BASE_URL` → `LLMConfigError` gdy brak.
+   Wariant A (`openai` + atrapa klucza) nadal działa jako alternatywa.
 
 **Świadome długi (następne kroki):**
-- Provider `ollama` w fabryce (B) + testy (brak wymogu klucza, inaczej niż `openai`).
 - Przypiąć tag obrazu `ollama/ollama` (teraz `latest`).
 - Wybrać i `pull` mniejszego Bielika pod dev/CPU (cel: 4.5B v3.0) → do `.env`, nie do compose.
+- Weryfikacja end-to-end: FastAPI z `LLM_PROVIDER=ollama` → Bielik streszcza realny dokument.
 
 ## Świadomie pominięte na teraz (NIE dodawać bez pytania)
 
