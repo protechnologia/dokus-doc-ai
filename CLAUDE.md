@@ -167,16 +167,32 @@ Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
   mapowanie testowane realnym 422, nie mockiem. Czysty mock wymagałby wydzielenia interfejsu
   transportu — nie robione bez potrzeby.
 
+## TODO — przed wdrożeniem produkcyjnym
+
+Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
+
+1. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
+   dla pism urzędowych twardy warunek wdrożenia. Do zrobienia przed resztą.
+2. **Audyt plumbingu configu.** Zweryfikować, że KAŻDE pokrętło z `.env.example` realnie działa
+   w kontenerze (compose przekazuje tylko jawnie wypisane ENV — jeden taki bug, nieprzekazany
+   `LLM_TIMEOUT_SECONDS`, już był). Rozważyć test pilnujący spójności `.env.example` ↔ compose
+   `environment` ↔ `Settings`.
+3. **Truncacja długich pism = ryzyko jakości.** Ucinanie od początku (`LLM_MAX_INPUT_CHARS`) może
+   pominąć kluczowe końcówki (termin, podpis, rygor) → mylące streszczenie. Decyzja: chunking/
+   map-reduce vs świadomy limit; dziś jest tylko flaga `truncated` (mówi „że", nie ratuje treści).
+4. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
+   rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
+5. **Ewaluacja jakości streszczeń.** Brak harnessu porównującego prompt/model (4.5B trzyma format
+   luźniej niż 11B). To serce produktu — mierzyć, nie „na oko".
+6. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
+   źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
+
 ## Świadomie pominięte (NIE dodawać bez pytania)
 
 - Chmurowy przystanek LLM (np. RunPod) — celowo pominięty; łamałby „prywatność pierwsza",
   a on-prem jest celem końcowym.
 - LiteLLM (unifikacja dostawców) oraz LangChain/LangGraph (orkiestracja, RAG).
-- Asynchroniczne wywołania przez kolejkę (np. RabbitMQ).
 - Wydzielenie OCR do osobnego kontenera (np. OCRmyPDF).
-- Uwierzytelnianie / bezpieczeństwo API między DOKUS a FastAPI.
-- Monitoring (np. Zabbix).
-- Chunking / map-reduce długich dokumentów (na teraz: prosta truncacja tekstu).
 
 Jeśli zadanie wydaje się wymagać któregoś z powyższych — zapytaj, zamiast wprowadzać.
 
