@@ -64,6 +64,13 @@ tu dokładasz nowy kod po właściwej stronie. Middleware nadaje/propaguje `X-Re
 (nagłówek + logi; to **NIE** monitoring). Wejście plików = **base64 w JSON** (nie multipart);
 modele API są **odrębne** od domenowych (kontrakt HTTP stoi niezależnie od ewolucji domeny).
 
+**Przyczyna błędu w logach = osobne handlery, nie middleware.** Middleware widzi już gotową
+`Response` — `detail` (jedyne „dlaczego") żyje wyłącznie w wyjątku, piętro niżej. Stąd
+`log_http_exception` (4xx→WARNING, 5xx→ERROR) i `log_validation_error` (bo `RequestValidationError`
+**nie** jest `HTTPException`, a to najczęstsze 422). Handlery **nie zmieniają odpowiedzi** —
+logują i delegują do domyślnych. Powód: realny 422 z produkcji, którego przyczyny nie dało się
+ustalić z logów bez dostępu do klienta.
+
 - **Transport** — izoluje jedną zależność zewnętrzną, operuje na surowcu:
   - `TikaClient` (izoluje `httpx`; `PUT /rmeta/text`) — **konkretna klasa, nie interfejs**:
     Tika zostaje, interfejs formalizujemy dopiero przy drugim silniku. Wyjątki:
