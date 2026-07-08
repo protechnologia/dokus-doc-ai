@@ -1,0 +1,54 @@
+# DOKUS Doc AI — warstwa produkcyjna (wdrozenie on-prem).
+#
+# Nakladka na docker-compose.yml. Baza jest DEVOWA nie przez bind-mounty (kod jest wpieczony
+# w obraz przez `COPY app ./app`), tylko przez PUBLIKACJE PORTOW uslug wewnetrznych: `tika`
+# wisi na hoscie wylacznie pod debug i testy integracyjne. Ta warstwa to zdejmuje.
+#
+# Uruchomienie (JEDEN plik — reszta przez `include` nizej):
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Procedura krok po kroku: README -> "Wdrozenie produkcyjne (serwer on-prem)".
+#
+# ZAKRES: tika + fastapi. Warstwy Bielika (docker-compose.bielik*.yml) sa rozlaczne — LLM
+# stoi dzis poza tym stackiem (Open WebUI). Gdyby Bielik mial wrocic na te maszyne, jego port
+# rowniez nalezy zresetowac (`ollama` -> `ports: !reset []`); komentarz w tamtym pliku sam
+# mowi, ze port istnieje "TYLKO pod debug".
+
+include:
+  - docker-compose.yml
+
+services:
+  # --- Tika: znika z hosta -------------------------------------------------------------
+  tika:
+    # `!reset []` KASUJE liste z bazy. Zwykle nadpisanie nie zadziala: compose SKLEJA `ports`
+    # miedzy warstwami, wiec wpis bazowy ("9998:9998" = 0.0.0.0) przezylby, a port zostalby
+    # otwarty. Zweryfikowane `docker compose config` (wymaga Compose >= 2.24).
+    #
+    # Po zresetowaniu Tika jest osiagalna WYLACZNIE z sieci compose (http://tika:9998) —
+    # tak, jak wola ja FastAPI. Publikacja na hoscie nie ma zadnego konsumenta na produkcji,
+    # a Tika parsuje dowolne pliki bez uwierzytelnienia: nie ma po co jej wystawiac.
+    #
+    # Skutek uboczny: testy integracyjne (uderzaja w localhost:9998) na tej warstwie NIE
+    # przechodza. Zamierzone — na produkcji ich nie odpalamy.
+    ports: !reset []
+    # Logi Dockera rosna bez ograniczen (domyslny json-file). Na serwerze, ktory ma chodzic
+    # miesiacami, to prosta droga do zapchanego dysku.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # --- FastAPI: port zostaje (DOKUS musi dojsc), ale zawezony przez BIND_ADDR z .env -----
+  fastapi:
+    # `ports` NIE ruszamy: `!reset` odcielby jedynego klienta, a nadpisanie by sie skleilo.
+    # Adres nasluchu ustawia BIND_ADDR w .env (patrz komentarz w docker-compose.yml).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+# Limitow zasobow (deploy.resources.limits) tu swiadomie NIE MA. Zgadniety limit pamieci
+# zabija OCR duzego PDF-a przez OOM w srodku zadania — a nie zmierzylismy, ile Tika bierze
+# przy MAX_OCR_PAGES=30. Do ustawienia po pomiarze na docelowej maszynie, nie "na oko".

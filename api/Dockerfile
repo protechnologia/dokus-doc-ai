@@ -1,6 +1,13 @@
 # Krok 2 — usluga FastAPI (logika biznesowa + API).
 # Obraz slim + uzytkownik non-root (zasada projektu: nie dzialamy jako root).
-FROM python:3.12-slim
+#
+# Baza przypieta DIGESTEM, nie samym tagiem (konwencja: piny — jak apache/tika:3.3.0.0-full
+# i ollama/ollama:0.31.1). Tag `3.12-slim` jest ruchomy: rebuild na serwerze za miesiac dalby
+# inny obraz niz testowany, a wdrozenie ma byc powtarzalne. Tag zostaje przed `@` dla
+# czytelnosci, ale wiaze digest. Aktualizacja swiadoma: `docker pull python:3.12-slim`, odczyt
+# nowego digestu (`docker image inspect python:3.12-slim --format '{{index .RepoDigests 0}}'`)
+# i podmiana ponizej.
+FROM python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
 
 # Nie zapisuj .pyc, nie buforuj stdout/stderr (czytelne logi w kontenerze).
 ENV PYTHONDONTWRITEBYTECODE=1 \

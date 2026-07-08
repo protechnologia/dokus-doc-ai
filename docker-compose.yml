@@ -46,8 +46,14 @@ services:
       LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-60}"
       # --- Summaryzacja ---
       LLM_MAX_INPUT_CHARS: "${LLM_MAX_INPUT_CHARS:-90000}"
+    # Adres nasluchu na HOSCIE. Domyslnie 0.0.0.0 (dev: dostepne z sieci). Na produkcji
+    # zawezamy przez BIND_ADDR w .env — do interfejsu LAN, przez ktory laczy sie DOKUS,
+    # albo do 127.0.0.1, gdy DOKUS stoi na tej samej maszynie.
+    # Uwaga: `ports` w warstwach compose SIE SKLEJAJA (nie nadpisuja), wiec adresu NIE da sie
+    # zmienic z docker-compose.prod.yml — musi byc sterowany stad, zmienna. Uslugi, ktorych
+    # port ma na produkcji zniknac calkiem (tika), warstwa prod kasuje przez `ports: !reset []`.
     ports:
-      - "${FASTAPI_PORT:-8000}:8000"
+      - "${BIND_ADDR:-0.0.0.0}:${FASTAPI_PORT:-8000}:8000"
     healthcheck:
       # python jest w obrazie (slim) — unikamy doinstalowywania curl.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]

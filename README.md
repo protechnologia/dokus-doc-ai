@@ -107,6 +107,9 @@ docker compose -f docker-compose.bielik.yml up -d
 
 # + Bielik na GPU (maszyna z NVIDIA + nvidia-container-toolkit — on-prem):
 docker compose -f docker-compose.bielik.gpu.yml up -d
+
+# wdrożenie produkcyjne (Tika niepublikowana, API pod BIND_ADDR, rotacja logów):
+docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 Usługa `ollama` istnieje wyłącznie w warstwie `docker-compose.bielik.yml` (nie w bazie), więc
@@ -114,6 +117,9 @@ tryb `fake` pozostaje lekki — nie ma potrzeby profili. Warstwa GPU jest osobna
 rezerwacja GPU **twardo wywala** start kontenera na maszynie bez runtime nvidia. Przełączenie API
 na Bielika robi się osobno, **jawnie w `.env`** (patrz „Zmiana dostawcy LLM na lokalnego
 Bielika").
+
+Warstwa `docker-compose.prod.yml` jest wobec warstw Bielika **rozłączna** (dziedziczy samą bazę):
+zdejmuje publikację portu Tiki i włącza rotację logów. Patrz „Wdrożenie produkcyjne".
 
 ## Konfiguracja
 
@@ -127,8 +133,9 @@ Zmienne wykorzystywane przez **Docker Compose**:
 
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
-| `TIKA_PORT` | `9998` | Port Apache Tika wystawiony na hoście. |
+| `TIKA_PORT` | `9998` | Port Apache Tika wystawiony na hoście — tylko pod debug i testy integracyjne. Warstwa `docker-compose.prod.yml` publikacji Tiki **nie robi wcale** (`ports: !reset []`), więc na produkcji ta zmienna nic nie znaczy. |
 | `FASTAPI_PORT` | `8000` | Port API wystawiony na hoście. |
+| `BIND_ADDR` | `0.0.0.0` | Adres nasłuchu API na hoście. Domyślnie wszystkie interfejsy (dev). Na produkcji zawęzić do interfejsu LAN, przez który łączy się DOKUS, albo do `127.0.0.1`, gdy DOKUS stoi na tej samej maszynie. |
 | `OLLAMA_PORT` | `11434` | Port kontenera Ollamy (warstwa `docker-compose.bielik.yml`) wystawiony na hoście — tylko pod debug z hosta (np. `curl localhost:11434/api/tags`). FastAPI go NIE używa: gada z Ollamą po sieci compose (`http://ollama:11434`). |
 
 Zmienne wykorzystywane przez **logikę aplikacji**:
@@ -718,3 +725,62 @@ używamy providera `openai` (Open WebUI, w odróżnieniu od gołej Ollamy, wymag
       -H "Content-Type: application/json" \
       -d '{"text":"Wzywam do zapłaty kwoty 1200 zł w terminie 14 dni."}'
     ```
+
+### Wdrożenie produkcyjne (serwer on-prem)
+
+Stack produkcyjny podnosi warstwa `docker-compose.prod.yml` (baza przez `include`, jeden `-f`).
+Różnice wobec bazy: Tika **nie jest publikowana** na hoście, API nasłuchuje pod `BIND_ADDR`,
+logi Dockera mają rotację. Obraz budujemy na serwerze ze źródeł z gita.
+
+1. **Zainstaluj Docker Engine + Compose** (Compose ≥ 2.24 — wymaga tego `!reset`):
+   ```bash
+   curl -fsSL https://get.docker.com | sh
+   docker compose version
+   ```
+
+2. **Sklonuj repozytorium na wersji, którą wdrażasz:**
+   ```bash
+   git clone https://github.com/protechnologia/dokus-doc-ai.git
+   cd dokus-doc-ai
+   git checkout <commit-lub-tag>
+   ```
+
+3. **Przygotuj `.env`** — konfiguracja LLM (patrz procedury wyżej) oraz adres nasłuchu API:
+   ```bash
+   cp .env.example .env
+   chmod 600 .env          # plik trzyma klucz API
+   ```
+   ```env
+   BIND_ADDR=<adres interfejsu LAN, przez ktory laczy sie DOKUS>
+   # BIND_ADDR=127.0.0.1   # gdy DOKUS stoi na tej samej maszynie
+   ```
+
+4. **Podnieś stack:**
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d --build
+   ```
+
+5. **Zweryfikuj ekspozycję portów** — Tika ma być bez mapowania na host, API tylko pod `BIND_ADDR`:
+   ```bash
+   docker compose -f docker-compose.prod.yml ps --format '{{.Name}}\t{{.Ports}}'
+   # dokus-tika     9998/tcp                    <- brak "0.0.0.0:" = niepublikowany
+   # dokus-fastapi  10.0.0.5:8000->8000/tcp
+   ```
+
+6. **Smoke test:**
+   ```bash
+   curl -s http://<BIND_ADDR>:8000/health
+   ```
+
+**Aktualizacja wersji:**
+```bash
+git pull && docker compose -f docker-compose.prod.yml up -d --build
+```
+
+**Wycofanie zmiany:**
+```bash
+git checkout <poprzedni-commit> && docker compose -f docker-compose.prod.yml up -d --build
+```
+
+> Testy integracyjne uderzają w `localhost:9998` i na tej warstwie **nie przechodzą** — Tika
+> nie jest publikowana. Odpalamy je na warstwie bazowej (dev), nie na produkcji.

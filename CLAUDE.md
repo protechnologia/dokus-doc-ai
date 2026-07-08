@@ -116,7 +116,8 @@ dostawcy = **tylko konfiguracja** (`LLM_PROVIDER`+ENV); logika ekstrakcji/prompt
 zmienia. Ollama wystawia endpoint **zgodny z API OpenAI** (`/v1`), więc `OpenAILLMClient` gada
 z Bielikiem bez zmian w kodzie — wystarczy `LLM_BASE_URL` + `LLM_MODEL`.
 
-**Trójwarstwowy układ compose** (rozdziela „CZY Bielik" od „JAK liczy"; bez profili):
+**Trójwarstwowy układ compose** (rozdziela „CZY Bielik" od „JAK liczy"; bez profili; warstwa
+produkcyjna jest wobec nich rozłączna — patrz „Warstwa produkcyjna"):
 - `docker-compose.yml` (baza) — `tika`+`fastapi`, LLM domyślnie `fake`. **Nie zawiera** Ollamy → domyślny `up` lekki.
 - `docker-compose.bielik.yml` — dokłada usługę `ollama` (kontener `dokus-ollama`, `base_url=http://ollama:11434/v1`) + wolumen `ollama-models`.
 - `docker-compose.bielik.gpu.yml` — cienka nakładka: rezerwacja GPU na `ollama`.
@@ -147,6 +148,31 @@ Procedura krok po kroku: **README → „Zmiana dostawcy LLM na lokalnego Bielik
   wystarcza.
 - Obraz przypięty `ollama/ollama:0.31.1`. Modele w wolumenie `ollama-models`
   (`docker compose -f docker-compose.bielik.yml exec ollama ollama pull <tag>`), przeżywają restart.
+
+## Warstwa produkcyjna — `docker-compose.prod.yml`
+
+Baza jest devowa **nie** przez bind-mounty (kod jest wpieczony: `COPY app ./app`; stąd konwencja
+„po zmianie `api/` przebuduj obraz"), tylko przez **publikację portów usług wewnętrznych**.
+`docker-compose.prod.yml` (`include` bazy, rozłączny z warstwami Bielika) to zdejmuje. Procedura:
+**README → „Wdrożenie produkcyjne (serwer on-prem)"**.
+
+**Pułapka — `ports` się SKLEJAJĄ, nie nadpisują.** Warstwa nie może „poprawić" portu z bazy:
+`docker compose config` pokaże wtedy DWA wpisy, a stary `0.0.0.0` zostanie otwarty. Stąd dwa
+różne mechanizmy, świadomie:
+- `tika` → `ports: !reset []` (kasuje listę z bazy; wymaga Compose ≥ 2.24). Port nie ma na
+  produkcji konsumenta — FastAPI woła Tikę po sieci compose (`http://tika:9998`), a Tika parsuje
+  dowolne pliki bez uwierzytelnienia. Skutek uboczny: **testy integracyjne** (biją w
+  `localhost:9998`) na tej warstwie nie przechodzą — zamierzone.
+- `fastapi` → adres nasłuchu z ENV **w bazie** (`${BIND_ADDR:-0.0.0.0}`). `!reset` odciąłby
+  jedynego klienta (DOKUS), a nadpisanie z warstwy by się skleiło — więc sterujemy tym stąd.
+
+Ollama, gdyby wróciła na tę maszynę, wymaga własnego `!reset` (jej port też jest tylko pod debug).
+
+**Limity zasobów świadomie pominięte** — zgadnięty limit pamięci ubija OCR dużego PDF-a przez OOM
+w środku żądania. Do ustawienia po pomiarze na docelowej maszynie, nie „na oko".
+
+Baza obrazu FastAPI przypięta **digestem** (`python:3.12-slim@sha256:...`), nie samym tagiem —
+ruchomy tag dawałby przy rebuildzie na serwerze inny obraz niż testowany.
 
 ## Klient PHP — integracja z DOKUS
 
