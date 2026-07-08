@@ -199,10 +199,12 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
 
 1. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
    dla pism urzędowych twardy warunek wdrożenia. Do zrobienia przed resztą.
-2. **Audyt plumbingu configu.** Zweryfikować, że KAŻDE pokrętło z `.env.example` realnie działa
-   w kontenerze (compose przekazuje tylko jawnie wypisane ENV — jeden taki bug, nieprzekazany
-   `LLM_TIMEOUT_SECONDS`, już był). Rozważyć test pilnujący spójności `.env.example` ↔ compose
-   `environment` ↔ `Settings`.
+2. **Audyt plumbingu configu — częściowo zrobione.** Spójności `.env.example` ↔ compose
+   `environment` ↔ `Settings` pilnuje `tests/unit/test_config_plumbing.py` (cztery niezmienniki,
+   parsuje pliki jako dane — bez Dockera). Złapał już dwa realne rozjazdy: `LLM_API_VERSION`
+   wstrzykiwany w próżnię (usunięty) i `OLLAMA_PORT` poza szablonem. **Zostaje**: weryfikacja, że
+   pokrętło realnie *działa* w runtime (test sprawdza przepływ nazw, nie zachowanie) — np.
+   nieprzekazany kiedyś `LLM_TIMEOUT_SECONDS` dziś zostałby złapany, ale zły typ/jednostka nie.
 3. **Truncacja długich pism = ryzyko jakości.** Ucinanie od początku (`LLM_MAX_INPUT_CHARS`) może
    pominąć kluczowe końcówki (termin, podpis, rygor) → mylące streszczenie. Decyzja: chunking/
    map-reduce vs świadomy limit; dziś jest tylko flaga `truncated` (mówi „że", nie ratuje treści).
