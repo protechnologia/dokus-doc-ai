@@ -560,6 +560,46 @@ polsku; realnie 750–1000):
 > dokument jest mniejsze — stąd `LLM_MAX_INPUT_CHARS` z zapasem. Strona gęsta (tabele,
 > pisma prawnicze) zajmuje więcej tokenów niż luźny tekst.
 
+#### Okno modelu ≠ okno, które dostaniesz (pułapka Ollamy)
+
+Powyższa tabela mówi, ile model **potrafi** przyjąć. Ollama domyślnie serwuje
+**`num_ctx = 4096`** i nie czyta okna z karty modelu — Bielik 11B deklaruje 32 768, a dostaje
+4 096. Dotyczy to także Ollamy schowanej za Open WebUI.
+
+Skutki są ciche i mylące:
+
+- Prompt dłuższy niż okno jest ucinany **od początku**. Ginie nagłówek dokumentu, a przed nim
+  **prompt systemowy** — model bez instrukcji przestaje streszczać i zaczyna zmyślać
+  (potwierdzone: pismo na 30 000 znaków → ogólny artykuł na temat, z faktami spoza dokumentu).
+- Nasza flaga `truncated` tego **nie wykryje**. Mówi wyłącznie o `LLM_MAX_INPUT_CHARS`, czyli
+  o cięciu po naszej stronie. Cięcie po stronie Ollamy raportowane jest jako `truncated: false`.
+- Przy `num_ctx = 4096` realne wejście pod dokument to ~3 100 tokenów ≈ **8 500 znaków ≈ 3 strony**
+  (4 096 − ~330 na prompt systemowy − 600 na odpowiedź).
+
+**Jak sprawdzić, ile naprawdę dostajesz:** pole `usage.prompt_tokens` w odpowiedzi
+`POST /summarize`. Wyślij tekst zdecydowanie dłuższy niż okno; jeżeli licznik zatrzyma się na
+okrągłej potędze dwójki (4096, 8192) zamiast rosnąć — to jest twój sufit.
+
+**Jak podnieść:** endpoint zgodny z OpenAI (`/v1`, także `/ollama/v1` w Open WebUI) **nie
+przyjmuje** `num_ctx` w żądaniu — tego pola nie ma w schemacie OpenAI. Okno ustawia się po
+stronie serwera: zmienną `OLLAMA_CONTEXT_LENGTH` w środowisku procesu Ollamy albo
+`PARAMETER num_ctx` w `Modelfile` modelu pochodnego. Natywne `POST /api/chat` Ollamy przyjmuje
+`options.num_ctx` per żądanie — przydatne do diagnostyki, ale nasz `OpenAILLMClient` z niego
+nie korzysta.
+
+**Ile podnieść:** KV cache rośnie liniowo z oknem, a gdy model przestaje mieścić się w VRAM,
+generowanie zwalnia drastycznie. Zmierzone na Bieliku 11B Q8_0 (karta ~20 GB):
+
+| `num_ctx` | model w pamięci | poza VRAM | generowanie |
+|---:|---:|---:|---:|
+| 8 192 | 13,0 GB | — | |
+| 16 384 | 15,1 GB | — | 36,4 tok/s |
+| 24 576 | 17,2 GB | — | |
+| 32 768 | 19,4 GB | 0,8 GB | 17,7 tok/s |
+
+Przelew 0,8 GB (4% modelu) obniżył generowanie o połowę. Prefill ucierpiał znacznie mniej —
+mierząc samo wczytywanie promptu, można nie zauważyć problemu.
+
 ## Testy
 
 ### Szybki sprawdzian ręczny
