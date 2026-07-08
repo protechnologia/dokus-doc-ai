@@ -140,10 +140,10 @@ Zmienne wykorzystywane przez **logikę aplikacji**:
 | `HEALTH_CHECK_TIMEOUT_SECONDS` | `3` | Maksymalny czas na odpowiedź Apache Tika podczas wywoływania endpointa `/health`. |
 | `MAX_UPLOAD_BYTES` | `20971520` | Maksymalny rozmiar zdekodowanego pliku w `POST /extract` i `POST /extract-and-summarize`. Powyżej tego rozmiaru API zwraca kod błędu `413`. |
 | `MAX_OCR_PAGES` | `30` | Limit stron PDF wysyłanych do ekstrakcji. Apache Tika samodzielnie decyduje, czy zastosować zwykłą ekstrakcję, czy OCR. Limit ma ochronić przed zbyt długim czasem trwania OCR. |
-| `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake` lub `openai`. |
-| `LLM_API_KEY` | — | Klucz API dla LLM (wymagany dla `openai`). |
-| `LLM_MODEL` | — | Nazwa modelu: `gpt-4o-mini` etc. (wymagana dla `openai`). |
-| `LLM_BASE_URL` | — | Opcjonalny własny endpoint zgodny z API OpenAI (`.../v1`). |
+| `LLM_PROVIDER` | `fake` | Dostawca LLM: `fake`, `openai` lub `ollama`. |
+| `LLM_API_KEY` | — | Klucz API dla LLM (wymagany dla `openai`; `ollama` go ignoruje). |
+| `LLM_MODEL` | — | Nazwa modelu: `gpt-4o-mini`, tag Ollamy, `id` modelu z Open WebUI (wymagana dla `openai` i `ollama`). |
+| `LLM_BASE_URL` | — | Własny endpoint zgodny z API OpenAI. Ścieżka zależy od dostawcy: Ollama → `.../v1`, Open WebUI → `.../ollama/v1`. Wymagany dla `ollama`, opcjonalny dla `openai`. |
 | `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
 | `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` i `POST /extract-and-summarize`. Ustawienie należy dostosować do rozmiaru okna kontekstu modelu lub do optymalizacji kosztów. |
 
@@ -650,3 +650,71 @@ Zakłada świeżą maszynę **Ubuntu/Debian** z GPU NVIDIA.
    ```bash
    docker compose -f docker-compose.bielik.gpu.yml up -d
    ```
+
+### Zmiana dostawcy LLM na Open WebUI
+
+Zakłada działającą instancję Open WebUI z podpiętym modelem. Open WebUI proxuje endpoint zgodny
+z API OpenAI pod `/ollama/v1`, więc po naszej stronie zmienia się **wyłącznie konfiguracja** —
+używamy providera `openai` (Open WebUI, w odróżnieniu od gołej Ollamy, wymaga prawdziwego klucza).
+
+**W panelu Open WebUI:**
+
+1. **Sprawdź źródło modelu** — *Admin Panel → Settings → Connections*. Jeżeli Open WebUI proxuje
+   do dostawcy chmurowego, dane dokumentów opuszczą urząd (zasada „prywatność pierwsza").
+
+2. **Odczytaj `id` modelu** — *Admin Panel → Settings → Models*. Potrzebne jest `id`, nie nazwa
+   wyświetlana.
+
+3. **Sprawdź parametry modelu** — `System Prompt` pusty i brak nadpisanej `temperature`: prompt
+   i `temperature=0` wysyła `SummarizationService`. Dwa miejsca, bo `/ollama/v1` omija warstwę
+   modeli Open WebUI: *Admin Panel → Settings → Models → (model)* oraz `Modelfile` po stronie
+   Ollamy (`ollama show <tag> --modelfile` — dyrektywy `SYSTEM` / `PARAMETER`).
+
+4. **Włącz klucze API** — *Admin Panel → Settings → General → Enable API Key*
+   (`ENABLE_API_KEYS`, domyślnie wyłączone).
+
+5. **Ogranicz zakres klucza** — *Enable API Key Endpoint Restrictions*, dozwolone endpointy:
+   `/ollama/v1/models,/ollama/v1/chat/completions`.
+
+6. **Wygeneruj klucz** — *Settings → Account → API Keys*, na dedykowanym koncie technicznym
+   (klucz dziedziczy uprawnienia konta, na którym powstał).
+
+**Weryfikacja dostępu** (przed zmianą `.env`):
+
+7. **Sprawdź klucz i listę modeli** — bez klucza musi zwrócić `401`:
+   ```bash
+   curl -s https://<host>/ollama/v1/models -H "Authorization: Bearer <klucz>"
+   ```
+
+8. **Sprawdź `chat/completions`** — odpowiedź musi mieć `choices[0].message.content`:
+   ```bash
+   curl -s -X POST https://<host>/ollama/v1/chat/completions \
+     -H "Authorization: Bearer <klucz>" -H "Content-Type: application/json" \
+     -d '{"model":"<id-modelu>","temperature":0,"messages":[{"role":"user","content":"Odpowiedz: OK"}]}'
+   ```
+
+**Po naszej stronie:**
+
+9. **Przełącz dostawcę w `.env`** — `LLM_BASE_URL` kończy się na `/ollama/v1` (SDK dokleja
+   `/chat/completions`):
+   ```env
+   LLM_PROVIDER=openai
+   LLM_BASE_URL=https://<host>/ollama/v1
+   LLM_API_KEY=<klucz z kroku 6>
+   LLM_MODEL=<id z kroku 7>
+   ```
+
+10. **Dostosuj `LLM_TIMEOUT_SECONDS` i `LLM_MAX_INPUT_CHARS`** do modelu stojącego za Open WebUI
+    (na CPU liczy rzędu minut na dokument, na GPU domyślne wartości wystarczają):
+    ```env
+    LLM_TIMEOUT_SECONDS=600
+    LLM_MAX_INPUT_CHARS=50000
+    ```
+
+11. **Restart i smoke test** — `POST /summarize` sprawdza samą ścieżkę LLM, z pominięciem Tiki:
+    ```bash
+    docker compose up -d fastapi
+    curl -s -X POST localhost:8000/summarize \
+      -H "Content-Type: application/json" \
+      -d '{"text":"Wzywam do zapłaty kwoty 1200 zł w terminie 14 dni."}'
+    ```
