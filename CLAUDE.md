@@ -205,14 +205,27 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    wstrzykiwany w próżnię (usunięty) i `OLLAMA_PORT` poza szablonem. **Zostaje**: weryfikacja, że
    pokrętło realnie *działa* w runtime (test sprawdza przepływ nazw, nie zachowanie) — np.
    nieprzekazany kiedyś `LLM_TIMEOUT_SECONDS` dziś zostałby złapany, ale zły typ/jednostka nie.
-3. **Truncacja długich pism = ryzyko jakości.** Ucinanie od początku (`LLM_MAX_INPUT_CHARS`) może
+3. **Prompt przecieka własnym formatem — zamiast akapitu wychodzi lista numerowana.**
+   `_SYSTEM_PROMPT` *opisuje* żądaną strukturę numerowanymi punktami (`1. streszczenie…`,
+   `2. pusta linia, a pod nią wypunktowanie…`). Model bierze tę numerację za **wzór wyjścia**:
+   akapit otwierający zwraca jako `1.` `2.` `3.`. Wypunktowanie „• " działa poprawnie — psuje się
+   wyłącznie ta jedna część. Zmierzone na Bieliku 11B (2026-07-08, `temperature=0`, powtarzalne)
+   — to defekt instrukcji, nie wahanie modelu. Dotyka rdzenia produktu: dekretujący ma dostać
+   zdanie „o co chodzi", nie tabelkę pól. Kierunek: **pokazać szablon dosłownie zamiast go
+   opisywać** + jawne „NIE numeruj" (model ma silny priors na listy numerowane). Uwaga: naprawa
+   bez pomiaru = wymiana jednej niesprawdzonej hipotezy na drugą → weryfikacja przez porównanie
+   starego i nowego promptu na tych samych pismach (zalążek pkt 6).
+4. **Truncacja długich pism = ryzyko jakości.** Ucinanie od początku (`LLM_MAX_INPUT_CHARS`) może
    pominąć kluczowe końcówki (termin, podpis, rygor) → mylące streszczenie. Decyzja: chunking/
    map-reduce vs świadomy limit; dziś jest tylko flaga `truncated` (mówi „że", nie ratuje treści).
-4. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
+   **Rozjazd bramek jest realny:** `MAX_OCR_PAGES=30` przepuszcza ~90 000 znaków ≈ 33 000 tokenów
+   — nie mieści się w ŻADNYM oknie Bielika 11B (max 32 768, a i to z przelewem VRAM).
+5. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
    rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
-5. **Ewaluacja jakości streszczeń.** Brak harnessu porównującego prompt/model (4.5B trzyma format
-   luźniej niż 11B). To serce produktu — mierzyć, nie „na oko".
-6. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
+6. **Ewaluacja jakości streszczeń.** Brak harnessu porównującego prompt/model (4.5B trzyma format
+   luźniej niż 11B). To serce produktu — mierzyć, nie „na oko". Pkt 3 pokazuje cenę braku:
+   defekt formatu przetrwał do wdrożenia produkcyjnego, bo nic go nie sprawdzało.
+7. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
    źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
 
 ## Świadomie pominięte (NIE dodawać bez pytania)
