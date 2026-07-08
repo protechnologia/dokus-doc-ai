@@ -33,6 +33,24 @@ logger = logging.getLogger(__name__)
 # --- Prompt (LOGIKA, nie sekret -> w kodzie, nie w ENV; nie zmienia sie przy zmianie dostawcy) ---
 
 # System prompt po polsku: rola pod dekretacje + narzucony format hybrydowy (akapit + punkty).
+#
+# JEDNOSTRZALOWY PRZYKLAD NA KONCU JEST NOSNY — nie jest ozdoba. Zmierzone na Bieliku 11B
+# (2026-07-08, temperature=0, trzy pisma: wezwanie / decyzja / informacja):
+#
+#   wariant promptu                       | akapit otwierajacy | punkty "• "
+#   --------------------------------------|--------------------|-------------
+#   sam opis formatu (bez przykladu)      | NIE (lista 1.2.3.) | 2 z 3 pism
+#   opis bez numeracji ("Najpierw/Potem") | NIE (sam znika)    | 3 z 3 pism
+#   opis + przyklad ponizej               | TAK, 3 z 3 pism    | 3 z 3 pism
+#
+# Czyli: model bierze numeracje z OPISU formatu ("1. ...", "2. ...") za wzor wyjscia. Ale samo
+# jej usuniecie nie pomaga — wtedy akapit znika calkiem, bo opisu model nie nasladuje, tylko
+# przyklad. Numeracja zostaje wiec nietknieta: wariant "bez numeracji + z przykladem" NIE byl
+# mierzony, a intuicja w tym miejscu juz raz zawiodla.
+#
+# Koszt: ~190 tokenow na kazde wywolanie (579 -> 773 na pismie 612 znakow).
+# Przyklad dotyczy CELOWO innego pisma (VAT-7) niz typowe wejscia — zweryfikowane, ze jego
+# tresc nie wycieka do odpowiedzi.
 _SYSTEM_PROMPT = (
     "Jesteś asystentem przygotowującym zwięzłe streszczenia pism dla osoby dekretującej "
     "dokumenty w urzędzie. Streść dokument tak, by osoba dekretująca od razu wiedziała, "
@@ -47,6 +65,14 @@ _SYSTEM_PROMPT = (
     "   • Termin / data\n"
     "   • Oczekiwana akcja\n\n"
     "Pomijaj punkty, których w dokumencie nie ma — niczego nie zmyślaj. Bądź rzeczowy i krótki."
+    "\n\nPrzykład poprawnej odpowiedzi (dotyczy INNEGO pisma — nie kopiuj jego treści):\n\n"
+    "Urząd Skarbowy wzywa spółkę do złożenia korekty deklaracji VAT-7 za marzec 2026 r. "
+    "w terminie 14 dni od doręczenia.\n\n"
+    "• Typ pisma: Wezwanie\n"
+    "• Nadawca: Urząd Skarbowy w Gliwicach\n"
+    "• Czego dotyczy: Korekta deklaracji VAT-7 za marzec 2026 r.\n"
+    "• Termin / data: 14 dni od doręczenia\n"
+    "• Oczekiwana akcja: Złożenie korekty deklaracji"
 )
 
 # Szablon wiadomosci usera: ramka + tresc dokumentu (system trzyma instrukcje formatu).

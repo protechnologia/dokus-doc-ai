@@ -9,7 +9,7 @@ pytest-asyncio -> `asyncio.run` (jak w pozostałych testach projektu).
 import asyncio
 
 from app.llm import FakeLLMClient, LLMClient, LLMResult, LLMUsage
-from app.summarization.service import EmptyInputError, SummarizationService
+from app.summarization.service import _SYSTEM_PROMPT, EmptyInputError, SummarizationService
 
 
 class _RecordingLLM(LLMClient):
@@ -88,6 +88,23 @@ def test_summarize_przekazuje_system_prompt_i_max_tokens():
     assert call["max_tokens"] == 321
     assert call["temperature"] == 0.0
     assert "Pismo z Urzędu Skarbowego" in call["user"]   # dokument w wiadomości usera
+
+
+def test_system_prompt_zawiera_jednostrzalowy_przyklad():
+    """Przykład NIE jest ozdobą: bez niego Bielik 11B gubi akapit otwierający (zmierzone, patrz komentarz w service.py).
+
+    Strażnik przed „uproszczeniem" promptu — sam opis formatu, bez pokazanego wzoru odpowiedzi,
+    daje samo wypunktowanie. Akapit „o co chodzi" jest tym, po co dekretujący czyta streszczenie.
+    """
+    assert "Przykład poprawnej odpowiedzi" in _SYSTEM_PROMPT
+
+    # Akapit wzorca stoi PRZED wypunktowaniem wzorca — kolejność jest tym, co model naśladuje.
+    akapit_wzorca = _SYSTEM_PROMPT.index("Urząd Skarbowy wzywa spółkę")
+    punkty_wzorca = _SYSTEM_PROMPT.index("• Typ pisma: Wezwanie")
+    assert akapit_wzorca < punkty_wzorca
+
+    # Przykład dotyczy innego pisma niż typowe wejścia — inaczej jego treść wycieka do odpowiedzi.
+    assert "nie kopiuj jego treści" in _SYSTEM_PROMPT
 
 
 def test_summarize_metadane_z_oryginalnej_dlugosci_i_truncacja():
