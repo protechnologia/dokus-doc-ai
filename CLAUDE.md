@@ -109,6 +109,14 @@ nie brak zmiennej → walidator `_puste_na_none` w `Settings` normalizuje pusty/
 opcjonalnych (`llm_api_key`/`llm_base_url`/`llm_model`) na `None` (inaczej
 `AsyncOpenAI(base_url="")` → `APIConnectionError`).
 
+**Gotcha configu 2 — powłoka przebija `.env`.** Przy interpolacji `${VAR:-default}` Compose
+stawia **zmienną środowiskową powłoki wyżej niż plik `.env`**, cicho i bez ostrzeżenia. Wystarczy
+`set -a; . ./.env; set +a` (kuszące przy `curl`u diagnostycznym), by reszta sesji miała
+zamrożone stare wartości: edycja `.env` przestaje cokolwiek zmieniać, a `up -d` odtwarza kontener
+ze starym ENV. Stąd zasada: **weryfikuj `docker compose config`, nie zawartość `.env`** — `config`
+pokazuje wynik interpolacji, czyli to, co naprawdę trafi do kontenera (procedura w README).
+Do odczytu jednej zmiennej bez skutków ubocznych: `V=$(grep -oP '^VAR=\K.*' .env)`.
+
 ## Kontener `ollama` — lokalny Bielik (opcjonalny)
 
 Lokalny model to **Ollama serwująca Bielika**, dokładana jako warstwy compose. Przełączenie

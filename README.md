@@ -755,19 +755,33 @@ logi Dockera mają rotację. Obraz budujemy na serwerze ze źródeł z gita.
    # BIND_ADDR=127.0.0.1   # gdy DOKUS stoi na tej samej maszynie
    ```
 
-4. **Podnieś stack:**
+4. **Sprawdź, co Compose realnie wstrzyknie** — nie czytaj `.env`, czytaj wynik interpolacji:
+   ```bash
+   docker compose -f docker-compose.prod.yml config | grep -E 'LLM_|MAX_|host_ip|published'
+   ```
+   Wartość inna niż w `.env` = zmienna o tej nazwie siedzi w środowisku powłoki i **przebija
+   plik**. Wyczyść ją (albo otwórz nową sesję) i powtórz:
+   ```bash
+   for v in $(grep -oP '^[A-Z][A-Z0-9_]*(?==)' .env); do unset "$v"; done
+   ```
+
+5. **Podnieś stack:**
    ```bash
    docker compose -f docker-compose.prod.yml up -d --build
    ```
 
-5. **Zweryfikuj ekspozycję portów** — Tika ma być bez mapowania na host, API tylko pod `BIND_ADDR`:
+6. **Zweryfikuj ekspozycję portów** — Tika ma być bez mapowania na host, API tylko pod `BIND_ADDR`:
    ```bash
    docker compose -f docker-compose.prod.yml ps --format '{{.Name}}\t{{.Ports}}'
    # dokus-tika     9998/tcp                    <- brak "0.0.0.0:" = niepublikowany
    # dokus-fastapi  10.0.0.5:8000->8000/tcp
    ```
+   Kontrola krzyżowa (`ps` pokazuje deklarację, nie stan jądra):
+   ```bash
+   ss -ltnp | grep -E '9998|8000'      # jedna linia, na <BIND_ADDR>:8000
+   ```
 
-6. **Smoke test:**
+7. **Smoke test:**
    ```bash
    curl -s http://<BIND_ADDR>:8000/health
    ```
