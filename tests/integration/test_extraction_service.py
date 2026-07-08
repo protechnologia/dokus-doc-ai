@@ -100,6 +100,50 @@ def test_extract_jezyk_z_wlasciwosci_docx(tika_url):
     assert result.metadata.language == "pl"
 
 
+def test_extract_skan_png_raportuje_ocr_used(tika_url):
+    """Skan-OBRAZ (PNG) -> `ocr_used=True` i MIME bez wewnetrznego znacznika Tiki.
+
+    Regresja: dopoki `ocr_used` czytalo WYLACZNIE `pdf:ocrPageCount`, obrazy raportowaly
+    `ocr_used=False` mimo realnego OCR (Tika nie wystawia tej metadanej dla nie-PDF; jedynym
+    sladem jest TesseractOCRParser w `X-TIKA:Parsed-By`). Dowod wymaga REALNEJ Tiki —
+    atrapa potwierdzilaby tylko nasze zalozenie o ksztalcie metadanych, nie samo zalozenie.
+    Przy okazji: Tika znakuje MIME zOCR-owanego obrazu jako `image/ocr-png` (typ spoza IANA),
+    a serwis ma go znormalizowac do `image/png`.
+    """
+    font_path = _find_font()
+    if not font_path:
+        pytest.skip("Brak fontu TTF z polskimi glifami (np. DejaVuSans) — pomijam OCR.")
+
+    img = Image.new("RGB", (1000, 300), "white")
+    ImageDraw.Draw(img).text((40, 100), "Wezwanie", fill="black", font=ImageFont.truetype(font_path, 80))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    service = ExtractionService(TikaClient(base_url=tika_url))
+    result = asyncio.run(service.extract(data=buf.getvalue(), content_type="image/png"))
+
+    assert "ezwanie" in result.text.lower()          # rdzen slowa — odporne na pomylki OCR
+    assert result.metadata.ocr_used is True          # sedno regresji
+    assert result.metadata.content_type == "image/png"   # nie "image/ocr-png"
+
+
+def test_extract_docx_nie_raportuje_ocr(tika_url):
+    """DOCX (ekstrakcja natywna) -> `ocr_used=False` — straznik przed falszywym pozytywem.
+
+    Sygnal obrazowy (`X-TIKA:Parsed-By`) dokladamy sumą logiczną do sygnalu PDF-owego, wiec
+    trzeba pilnowac, ze dokument bez OCR nadal raportuje `False`.
+    """
+    document = docx.Document()
+    document.add_paragraph("Pismo czytane natywnie, bez OCR.")
+    buf = io.BytesIO()
+    document.save(buf)
+
+    service = ExtractionService(TikaClient(base_url=tika_url))
+    result = asyncio.run(service.extract(data=buf.getvalue()))
+
+    assert result.metadata.ocr_used is False
+
+
 def _make_scan_pdf(pages_text: list[str], font_path: str) -> bytes:
     """Zbuduj PDF OBRAZOWY (bez warstwy tekstowej): kazda strona to render slowa do obrazu.
 

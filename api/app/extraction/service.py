@@ -41,10 +41,29 @@ _LANGUAGE_KEYS = ("language", "dc:language")
 # Wewnatrz linii zwijamy ciagi spacji/tabow/twardej spacji (U+00A0) do jednej spacji.
 _INLINE_WS = re.compile(r"[ \t ]+")
 
-# Metadana Tiki z liczba stron PDF realnie poddanych OCR. Wiarygodny sygnal "czy poszlo OCR"
-# (zweryfikowane 2026-06-21: `X-TIKA:Parsed-By` dla PDF NIE pokazuje TesseractOCRParser, a
-# `pdf:ocrPageCount` owszem: 0 bez OCR, >0 po OCR — tez przy wymuszonym `ocr_only`).
+# Sygnaly "czy poszlo OCR". Zaden pojedynczy nie pokrywa obu rodzajow wejscia — trzeba SUMY.
+# Zmierzone na naszej Tice (2026-07-08, `/rmeta/text`):
+#
+#   wejscie      | Content-Type   | pdf:ocrPageCount | Tesseract w Parsed-By | OCR realnie
+#   -------------|----------------|------------------|-----------------------|------------
+#   natywny PDF  | application/pdf| "0"              | NIE                   | nie
+#   skan PDF     | application/pdf| "1"              | NIE                   | TAK
+#   obraz PNG    | image/ocr-png  | (brak klucza)    | TAK                   | TAK
+#
+# Czyli: PDF raportuje OCR wylacznie przez `pdf:ocrPageCount`, obraz wylacznie przez liste
+# parserow. Natywny PDF nie zapala zadnego z nich -> suma logiczna nie daje falszywych
+# pozytywow. Wczesniej patrzylismy tylko na `pdf:ocrPageCount`, wiec skany-obrazy (nie-PDF)
+# raportowaly `ocr_used=false` mimo realnego OCR.
 _OCR_PAGE_COUNT_KEY = "pdf:ocrPageCount"
+_PARSED_BY_KEY      = "X-TIKA:Parsed-By"
+# Dopasowanie po FRAGMENCIE nazwy, nie po pelnej sciezce pakietu — ta bywa zmieniana miedzy
+# wersjami Tiki (dzis: "org.apache.tika.parser.ocr.TesseractOCRParser").
+_TESSERACT_PARSER   = "TesseractOCRParser"
+
+# Prefiks, ktorym Tika znakuje MIME obrazu poddanego OCR ("image/ocr-png", "image/ocr-jpeg").
+# To NIE jest typ z rejestru IANA, tylko wewnetrzny znacznik parsera — nie moze wyciec do
+# kontraktu HTTP (DOKUS dostalby MIME, ktorego nie rozumie). Fakt uzycia OCR niesie `ocr_used`.
+_OCR_MIME_PREFIX = "image/ocr-"
 
 
 # --- Wynik domenowy ekstrakcji ---------------------------------------------------
@@ -62,7 +81,7 @@ class ExtractionMetadata(BaseModel):
     language: str | None     = Field(default=None, description="Wykryty jezyk wg metadanych Tiki, np. 'pl'; None gdy nieznany.")
     char_count: int          = Field(description="Liczba znakow tekstu po normalizacji.")
     word_count: int          = Field(description="Liczba slow tekstu po normalizacji (podzial po bialych znakach).")
-    ocr_used: bool           = Field(default=False, description="Czy tresc powstala (w calosci lub czesci) przez OCR — wg `pdf:ocrPageCount`>0.")
+    ocr_used: bool           = Field(default=False, description="Czy tresc powstala (w calosci lub czesci) przez OCR — wg `pdf:ocrPageCount`>0 (PDF) lub TesseractOCRParser w `X-TIKA:Parsed-By` (obraz).")
     pages_total: int | None  = Field(default=None, description="Liczba stron zrodlowego PDF; None dla nie-PDF lub gdy nie udalo sie odczytac.")
     pages_processed: int | None = Field(default=None, description="Ile pierwszych stron PDF realnie wyslano do Tiki (=pages_total, gdy bez ciecia); None dla nie-PDF.")
     ocr_truncated: bool      = Field(default=False, description="Czy PDF ucieto do limitu `MAX_OCR_PAGES` (pominieto strony pages_processed..pages_total).")
@@ -227,19 +246,25 @@ class ExtractionService:
     ) -> str | None:
         """Opis metody:
         Wyciagnij MIME z metadanych Tiki, bez parametrow typu (np. "; charset=UTF-8") —
-        do diagnostyki liczy sie sam typ, charset to szum. Brak -> None. Czysta funkcja.
+        do diagnostyki liczy sie sam typ, charset to szum. Dodatkowo sciagamy wewnetrzny
+        znacznik OCR Tiki ("image/ocr-png" -> "image/png", patrz `_OCR_MIME_PREFIX`).
+        Brak -> None. Czysta funkcja.
 
         Przyklad argumentow:
             raw_metadata={"Content-Type": "text/plain; charset=UTF-8"}
 
         Przyklad wyniku:
-            "text/plain"
+            "text/plain"          # "image/ocr-png" -> "image/png"
         """
         content_type = cls._as_text(raw_metadata.get("Content-Type"))
         if not content_type:
             return None
         # Odetnij parametry typu po sredniku ("; charset=...") i przytnij.
-        return content_type.split(";")[0].strip()
+        content_type = content_type.split(";")[0].strip()
+        # "image/ocr-png" to znacznik parsera, nie MIME z rejestru IANA -> zwroc prawdziwy typ.
+        if content_type.startswith(_OCR_MIME_PREFIX):
+            return "image/" + content_type[len(_OCR_MIME_PREFIX):]
+        return content_type
 
     @classmethod
     def _pick_language(
@@ -264,13 +289,12 @@ class ExtractionService:
         return None
 
     @staticmethod
-    def _pick_ocr_used(
+    def _ocr_from_page_count(
         raw_metadata: dict[str, Any],   # surowe metadane Tiki (zrodlo pdf:ocrPageCount)
     ) -> bool:
         """Opis metody:
-        Czy poszlo OCR — wg `pdf:ocrPageCount`>0 (jedyny wiarygodny sygnal dla PDF, patrz
-        stala `_OCR_PAGE_COUNT_KEY`). Wartosc bywa str lub int; brak/nieparsowalne -> False.
-        Czysta funkcja.
+        Czy poszlo OCR wg sygnalu PDF-owego: `pdf:ocrPageCount` > 0. Wartosc bywa str lub int;
+        brak klucza/nieparsowalne -> False. Czysta funkcja.
 
         Przyklad argumentow:
             raw_metadata={"pdf:ocrPageCount": "1"}
@@ -284,6 +308,44 @@ class ExtractionService:
             return int(value) > 0
         except (TypeError, ValueError):
             return False
+
+    @staticmethod
+    def _ocr_from_parsed_by(
+        raw_metadata: dict[str, Any],   # surowe metadane Tiki (zrodlo X-TIKA:Parsed-By)
+    ) -> bool:
+        """Opis metody:
+        Czy poszlo OCR wg sygnalu obrazowego: `TesseractOCRParser` na liscie uzytych parserow.
+        Brak klucza / nie-lista / same inne parsery -> False. Czysta funkcja.
+
+        Przyklad argumentow:
+            raw_metadata={"X-TIKA:Parsed-By": ["...image.ImageParser", "...ocr.TesseractOCRParser"]}
+
+        Przyklad wyniku:
+            True
+        """
+        parsers = raw_metadata.get(_PARSED_BY_KEY)
+        # Tika oddaje liste stringow; pojedyncza wartosc/None/cokolwiek innego traktujemy jako brak.
+        if not isinstance(parsers, list):
+            return False
+        return any(_TESSERACT_PARSER in str(parser) for parser in parsers)
+
+    @classmethod
+    def _pick_ocr_used(
+        cls,
+        raw_metadata: dict[str, Any],   # surowe metadane Tiki (zrodlo obu sygnalow OCR)
+    ) -> bool:
+        """Opis metody:
+        Czy tresc powstala przez OCR — SUMA dwoch rozlacznych sygnalow (macierz przy stalych
+        `_OCR_PAGE_COUNT_KEY` / `_PARSED_BY_KEY`): PDF raportuje OCR licznikiem stron, obraz
+        obecnoscia Tesseracta na liscie parserow. Czysta funkcja.
+
+        Przyklad argumentow:
+            raw_metadata={"X-TIKA:Parsed-By": ["...ocr.TesseractOCRParser"]}   # skan-obraz
+
+        Przyklad wyniku:
+            True
+        """
+        return cls._ocr_from_page_count(raw_metadata) or cls._ocr_from_parsed_by(raw_metadata)
 
     @classmethod
     def _build_metadata(
@@ -308,14 +370,14 @@ class ExtractionService:
                                word_count=2, ocr_used=False, pages_total=None, ...)
         """
         return ExtractionMetadata(
-            content_type=cls._pick_content_type(raw_metadata),
-            language=cls._pick_language(raw_metadata),
-            char_count=cls._count_chars(text),
-            word_count=cls._count_words(text),
-            ocr_used=cls._pick_ocr_used(raw_metadata),
-            pages_total=pages_total,
-            pages_processed=pages_processed,
-            ocr_truncated=ocr_truncated,
+            content_type    = cls._pick_content_type(raw_metadata),
+            language        = cls._pick_language(raw_metadata),
+            char_count      = cls._count_chars(text),
+            word_count      = cls._count_words(text),
+            ocr_used        = cls._pick_ocr_used(raw_metadata),
+            pages_total     = pages_total,
+            pages_processed = pages_processed,
+            ocr_truncated   = ocr_truncated,
         )
 
     # --- Wywolanie (I/O przez transport) — orkiestracja ----------------------------

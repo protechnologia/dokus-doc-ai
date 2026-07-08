@@ -85,6 +85,15 @@ def test_pick_content_type_brak_daje_none():
     assert ExtractionService._pick_content_type({}) is None
 
 
+def test_pick_content_type_sciaga_znacznik_ocr_tiki():
+    # Scenariusz: obraz poddany OCR — Tika znakuje MIME wlasnym prefiksem "image/ocr-".
+    # Oczekujemy: prawdziwy MIME (znacznik parsera nie moze wyciec do kontraktu HTTP).
+    assert ExtractionService._pick_content_type({"Content-Type": "image/ocr-png"}) == "image/png"
+    assert ExtractionService._pick_content_type({"Content-Type": "image/ocr-jpeg"}) == "image/jpeg"
+    # Zwykly obraz (bez OCR) przechodzi bez zmian.
+    assert ExtractionService._pick_content_type({"Content-Type": "image/png"}) == "image/png"
+
+
 # --- _pick_language: jezyk defensywnie -------------------------------------------
 
 
@@ -108,14 +117,44 @@ def test_pick_language_brak_daje_none():
 
 # --- _pick_ocr_used: sygnal "czy poszlo OCR" z metadanych ------------------------
 
+_TESSERACT = "org.apache.tika.parser.ocr.TesseractOCRParser"
+_IMAGE_PARSER = "org.apache.tika.parser.image.ImageParser"
 
-def test_pick_ocr_used_z_ocr_page_count():
+
+def test_ocr_from_page_count_sygnal_pdf():
     # Tika zwraca pdf:ocrPageCount jako string albo int; >0 = OCR poszedl.
-    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": "1"}) is True
-    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": 3}) is True
-    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": 0}) is False
-    assert ExtractionService._pick_ocr_used({}) is False                         # brak klucza
-    assert ExtractionService._pick_ocr_used({"pdf:ocrPageCount": "x"}) is False  # nieparsowalne -> False
+    assert ExtractionService._ocr_from_page_count({"pdf:ocrPageCount": "1"}) is True
+    assert ExtractionService._ocr_from_page_count({"pdf:ocrPageCount": 3}) is True
+    assert ExtractionService._ocr_from_page_count({"pdf:ocrPageCount": 0}) is False
+    assert ExtractionService._ocr_from_page_count({}) is False                         # brak klucza
+    assert ExtractionService._ocr_from_page_count({"pdf:ocrPageCount": "x"}) is False  # nieparsowalne -> False
+
+
+def test_ocr_from_parsed_by_sygnal_obrazu():
+    # Dla obrazu Tika NIE zwraca pdf:ocrPageCount — jedynym sladem jest lista parserow.
+    assert ExtractionService._ocr_from_parsed_by({"X-TIKA:Parsed-By": [_IMAGE_PARSER, _TESSERACT]}) is True
+    assert ExtractionService._ocr_from_parsed_by({"X-TIKA:Parsed-By": [_IMAGE_PARSER]}) is False
+    assert ExtractionService._ocr_from_parsed_by({}) is False                              # brak klucza
+    assert ExtractionService._ocr_from_parsed_by({"X-TIKA:Parsed-By": _TESSERACT}) is False  # nie-lista -> brak sygnalu
+    assert ExtractionService._ocr_from_parsed_by({"X-TIKA:Parsed-By": []}) is False
+
+
+def test_pick_ocr_used_macierz_wejsc():
+    # Macierz zmierzona na naszej Tice (2026-07-08) — patrz komentarz przy stalych w service.py.
+    # Natywny PDF: warstwa tekstowa, OCR nie poszedl.
+    assert ExtractionService._pick_ocr_used(
+        {"Content-Type": "application/pdf", "pdf:ocrPageCount": "0", "X-TIKA:Parsed-By": ["...PDFParser"]}
+    ) is False
+    # Skan PDF: OCR poszedl, ale Tesseracta NIE MA na liscie parserow — ratuje licznik stron.
+    assert ExtractionService._pick_ocr_used(
+        {"Content-Type": "application/pdf", "pdf:ocrPageCount": "1", "X-TIKA:Parsed-By": ["...PDFParser"]}
+    ) is True
+    # Obraz: OCR poszedl, ale NIE MA licznika stron — ratuje lista parserow (regresja: bylo False).
+    assert ExtractionService._pick_ocr_used(
+        {"Content-Type": "image/ocr-png", "X-TIKA:Parsed-By": [_IMAGE_PARSER, _TESSERACT]}
+    ) is True
+    # Zaden sygnal (np. czysty tekst).
+    assert ExtractionService._pick_ocr_used({"Content-Type": "text/plain"}) is False
 
 
 # --- _build_metadata: zlozenie helperow ------------------------------------------
