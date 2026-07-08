@@ -5,9 +5,11 @@ Warstwa DOMENOWA: niezalezna od tego, ktory dostawca LLM stoi pod spodem (analog
 wstrzyknieta — rozmawia z nia tylko przez `complete`. To TU mieszka wiedza o promptach:
 system prompt po polsku + szablon usera + truncacja wejscia pod okno modelu.
 
-Format streszczenia (decyzja produktowa, 2.4): HYBRYDA — krotki akapit + wypunktowanie
-kluczowych elementow (typ pisma, nadawca, czego dotyczy, termin, akcja), wszystko jako
-JEDEN string `summary` (bez JSON/parsowania). System prompt nizej narzuca ten format.
+Format streszczenia (decyzja produktowa, 2.4; zrewidowana 2026-07-08): WYPUNKTOWANIE
+kluczowych pol (typ pisma, nadawca, czego dotyczy, termin, akcja) jako JEDEN string
+`summary` (bez JSON/parsowania). System prompt nizej narzuca ten format. Akapit
+otwierajacy byl w pierwotnym zamysle, ale model go nie oddaje bez protez — patrz macierz
+pomiarow przy `_SYSTEM_PROMPT`.
 
 Truncacja (truncacja POD OKNO MODELU — co innego niz limit stron ekstrakcji z 2.3.5):
 prosta, w znakach (`max_input_chars`), bierzemy POCZATEK tekstu (nie chunking) + log +
@@ -32,47 +34,42 @@ logger = logging.getLogger(__name__)
 
 # --- Prompt (LOGIKA, nie sekret -> w kodzie, nie w ENV; nie zmienia sie przy zmianie dostawcy) ---
 
-# System prompt po polsku: rola pod dekretacje + narzucony format hybrydowy (akapit + punkty).
+# System prompt po polsku: rola pod dekretacje + format = SAMO WYPUNKTOWANIE (bez akapitu).
 #
-# JEDNOSTRZALOWY PRZYKLAD NA KONCU JEST NOSNY — nie jest ozdoba. Zmierzone na Bieliku 11B
-# (2026-07-08, temperature=0, trzy pisma: wezwanie / decyzja / informacja):
+# BRAK AKAPITU OTWIERAJACEGO JEST DECYZJA, NIE NIEDOPATRZENIEM. Model nasladuje najbardziej
+# konkretny wzorzec obecny w prompcie; lista pol jest konkretna, "napisz akapit" to tylko opis.
+# Zmierzone na Bieliku 11B (2026-07-08, temperature=0, szesc pism, po dwa niezalezne przebiegi):
 #
-#   wariant promptu                       | akapit otwierajacy | punkty "• "
-#   --------------------------------------|--------------------|-------------
-#   sam opis formatu (bez przykladu)      | NIE (lista 1.2.3.) | 2 z 3 pism
-#   opis bez numeracji ("Najpierw/Potem") | NIE (sam znika)    | 3 z 3 pism
-#   opis + przyklad ponizej               | TAK, 3 z 3 pism    | 3 z 3 pism
+#   wariant promptu                              | akapit  | punkty "• " | stabilnosc
+#   ---------------------------------------------|---------|-------------|------------
+#   opis "1./2." (numeracja przecieka do wyjscia)| lista   | 2 z 3       | —
+#   opis bez numeracji, bez przykladu            | ZNIKA   | 3 z 6       | stabilnie zle
+#   opis + przyklad wklejony w system            | 3 z 6   | 6 z 6       | chwiejna
+#   opis + przyklad + jawny zakaz "nie zaczynaj •"| 5 z 6  | 6 z 6       | stabilna
+#   markdown (## Rola / ## Format) bez przykladu | 0 z 6   | 6 z 6       | stabilnie zle
+#   przyklad jako TURA `assistant` (few-shot)    | 6 z 6   | 6 z 6       | stabilna
+#   SAMO WYPUNKTOWANIE (ten prompt)              |   —     | 6 z 6       | 18/18, dwa przebiegi
 #
-# Czyli: model bierze numeracje z OPISU formatu ("1. ...", "2. ...") za wzor wyjscia. Ale samo
-# jej usuniecie nie pomaga — wtedy akapit znika calkiem, bo opisu model nie nasladuje, tylko
-# przyklad. Numeracja zostaje wiec nietknieta: wariant "bez numeracji + z przykladem" NIE byl
-# mierzony, a intuicja w tym miejscu juz raz zawiodla.
+# Wniosek: akapit dawal sie wymusic tylko przykladem (i to najpewniej dopiero jako tura
+# `assistant`, co wymaga zmiany interfejsu `LLMClient`). Zamiast placic zakazami i few-shotem
+# za forme, ktorej model nie chce — rezygnujemy z akapitu. Prompt krotszy o ~130 tokenow,
+# format stabilny bez zadnych protez.
 #
-# Koszt: ~190 tokenow na kazde wywolanie (579 -> 773 na pismie 612 znakow).
-# Przyklad dotyczy CELOWO innego pisma (VAT-7) niz typowe wejscia — zweryfikowane, ze jego
-# tresc nie wycieka do odpowiedzi.
+# UWAGA: pomiar sprawdzal WYLACZNIE format. Tresc ma znane wady (patrz TODO nr 5 w CLAUDE.md):
+# model wypelnia pole, ktorego w pismie nie ma ("Oczekiwana akcja: potwierdzenie obecnosci"
+# przy zwyklym przypomnieniu) i myli semantyke pol (podstawa prawna w "Termin / data").
 _SYSTEM_PROMPT = (
     "Jesteś asystentem przygotowującym zwięzłe streszczenia pism dla osoby dekretującej "
     "dokumenty w urzędzie. Streść dokument tak, by osoba dekretująca od razu wiedziała, "
     "czego pismo dotyczy i co należy z nim zrobić.\n\n"
-    "Odpowiadaj WYŁĄCZNIE po polsku, w formacie:\n"
-    "1. Jedno- lub dwuzdaniowe streszczenie naturalnym językiem.\n"
-    "2. Pusta linia, a pod nią wypunktowanie kluczowych elementów — każdy w osobnej linii "
-    "zaczynającej się od „• ”, TYLKO te, które faktycznie występują w dokumencie:\n"
+    "Odpowiadaj WYŁĄCZNIE po polsku. Odpowiedź to wypunktowanie — każdy element w osobnej "
+    "linii zaczynającej się od „• ”, TYLKO te, które faktycznie występują w dokumencie:\n"
     "   • Typ pisma\n"
     "   • Nadawca\n"
     "   • Czego dotyczy\n"
     "   • Termin / data\n"
     "   • Oczekiwana akcja\n\n"
     "Pomijaj punkty, których w dokumencie nie ma — niczego nie zmyślaj. Bądź rzeczowy i krótki."
-    "\n\nPrzykład poprawnej odpowiedzi (dotyczy INNEGO pisma — nie kopiuj jego treści):\n\n"
-    "Urząd Skarbowy wzywa spółkę do złożenia korekty deklaracji VAT-7 za marzec 2026 r. "
-    "w terminie 14 dni od doręczenia.\n\n"
-    "• Typ pisma: Wezwanie\n"
-    "• Nadawca: Urząd Skarbowy w Gliwicach\n"
-    "• Czego dotyczy: Korekta deklaracji VAT-7 za marzec 2026 r.\n"
-    "• Termin / data: 14 dni od doręczenia\n"
-    "• Oczekiwana akcja: Złożenie korekty deklaracji"
 )
 
 # Szablon wiadomosci usera: ramka + tresc dokumentu (system trzyma instrukcje formatu).
@@ -94,7 +91,7 @@ class SummarizationMetadata(BaseModel):
 class SummarizationResult(BaseModel):
     """Domenowy wynik: streszczenie + metadane."""
 
-    summary: str                    = Field(description="Streszczenie (hybryda: akapit + punkty), jeden tekst.")
+    summary: str                    = Field(description="Streszczenie (wypunktowanie kluczowych pól), jeden tekst.")
     metadata: SummarizationMetadata = Field(description="Metadane: model, długość wejścia, truncacja, zużycie.")
 
 

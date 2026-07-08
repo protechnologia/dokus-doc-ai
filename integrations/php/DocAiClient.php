@@ -450,7 +450,7 @@ final class SummarizeMetadata
 }
 
 /**
- * Do czego: odpowiedz `POST /summarize` — streszczenie (hybryda: akapit + punkty) + metadane.
+ * Do czego: odpowiedz `POST /summarize` — streszczenie (wypunktowanie kluczowych pól) + metadane.
  */
 final class SummarizeResult
 {
@@ -595,7 +595,7 @@ final class DocAiClient
     /**
      * Opis metody:
      * Streszcz gotowy TEKST (`POST /summarize`) — bez ekstrakcji. Wejscie to czysty string;
-     * serwer skleja prompt hybrydowy (akapit + punkty) i pilnuje truncacji pod okno modelu.
+     * serwer skleja prompt (wypunktowanie kluczowych pól) i pilnuje truncacji pod okno modelu.
      *
      * Przyklad argumentow: text='Urzad Skarbowy wzywa do zaplaty zaleglosci...'
      * Przyklad wyniku: SummarizeResult(summary='...', metadata=SummarizeMetadata(model='gpt-4o-mini', ...))

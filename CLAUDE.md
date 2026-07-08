@@ -96,12 +96,14 @@ ustalić z logów bez dostępu do klienta.
       dużego PDF; cięcie **nie ciche** (metadane `pages_total`/`pages_processed`/`ocr_truncated`).
     - **OCR-fallback**: przy wykrytej PUA retry z per-request `X-Tika-PDFOcrStrategy: ocr_only`
       na już uciętym pliku. `ocr_used` z `pdf:ocrPageCount > 0`.
-  - `SummarizationService` — składa **prompt hybrydowy PL** (rola: streszczenie pisma pod
-    dekretację; krótki akapit + wypunktowane elementy obecne w piśmie, bez zmyślania; jako
-    jeden string `summary`). Prompt = logika → w kodzie (`_SYSTEM_PROMPT`), nie w ENV.
-    Kończy go **jednostrzałowy przykład** — nośny, nie ozdobny: bez niego Bielik 11B gubi akapit
-    otwierający i zwraca samo wypunktowanie (zmierzone; macierz wariantów w komentarzu przy
-    prompcie, strażnik w `tests/unit/test_summarization_service.py`).
+  - `SummarizationService` — składa **prompt PL** (rola: streszczenie pisma pod dekretację;
+    **samo wypunktowanie** pięciu pól obecnych w piśmie, bez zmyślania; jako jeden string
+    `summary`). Prompt = logika → w kodzie (`_SYSTEM_PROMPT`), nie w ENV. **Akapitu otwierającego
+    świadomie NIE ma**: model naśladuje najbardziej konkretny wzorzec w prompcie (lista pól), a
+    „napisz akapit" to tylko opis — dawał się wymusić wyłącznie przykładem, i to najpewniej dopiero
+    jako tura `assistant` (zmiana interfejsu `LLMClient`). Macierz siedmiu wariantów × sześć pism ×
+    dwa przebiegi: komentarz przy prompcie. Strażniki: `tests/unit/test_summarization_service.py`
+    (pięć pól, zero numeracji w opisie, żadnej obietnicy akapitu).
     Truncacja wejścia do `LLM_MAX_INPUT_CHARS` (liczona w **znakach**; pierwsze N, nie chunking;
     flaga `truncated`). Pusty tekst → `EmptyInputError`.
   - `PipelineService` — orkiestrator `extract` → `summarize`; **bez własnego I/O**; odpowiedź
@@ -160,8 +162,8 @@ Procedura krok po kroku: **README → „Zmiana dostawcy LLM na lokalnego Bielik
 
 **Uwagi praktyczne:**
 - **Model:** dev/CPU → mniejszy (`SpeakLeash/bielik-4.5b-v3.0-instruct:Q8_0`, okno 8K, format
-  hybrydowy trzyma luźno); on-prem/GPU → `bielik-11b-v3.0-instruct` (okno 32K, ściśle trzyma
-  format). Przy mniejszym oknie obniż `LLM_MAX_INPUT_CHARS`.
+  trzyma luźno); on-prem/GPU → `bielik-11b-v3.0-instruct` (okno 32K, ściśle trzyma format —
+  zmierzone: 18/18 na wypunktowaniu). Przy mniejszym oknie obniż `LLM_MAX_INPUT_CHARS`.
 - **CPU liczy wolno** (rzędu minut/dokument) → podnieś `LLM_TIMEOUT_SECONDS`; na GPU domyślne
   wystarcza.
 - Obraz przypięty `ollama/ollama:0.31.1`. Modele w wolumenie `ollama-models`
@@ -230,12 +232,25 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    — nie mieści się w ŻADNYM oknie Bielika 11B (max 32 768, a i to z przelewem VRAM).
 4. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
    rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
-5. **Ewaluacja jakości streszczeń.** Brak harnessu porównującego prompt/model (4.5B trzyma format
-   luźniej niż 11B). To serce produktu — mierzyć, nie „na oko". Cena braku jest zmierzona: defekt
-   formatu promptu (numeracja opisu → numeracja wyjścia) przetrwał do wdrożenia produkcyjnego, bo
-   nic go nie sprawdzało; a pierwsza „oczywista" poprawka okazała się **gorsza** od defektu (patrz
-   komentarz przy `_SYSTEM_PROMPT`). Harness mierzy dziś tylko zgodność z FORMATEM — jakość
-   merytoryczna nadal nie jest mierzona (Bielik zmyślił „decyzja prawomocna przez 14 dni").
+5. **Ewaluacja jakości streszczeń — nadal BRAK harnessu.** To serce produktu; mierzyć, nie „na oko".
+   Format jest dziś ustawiony pomiarem (macierz przy `_SYSTEM_PROMPT`), ale **treść nie jest
+   mierzona niczym**, a ma zmierzone wady, powtarzalne przy `temperature=0`:
+   - **zmyśla brakujące pole** — przy zwykłym przypomnieniu o zebraniu wypełnia „Oczekiwana akcja:
+     potwierdzenie obecności", choć pismo o tym milczy. Szablon ma pięć wierszy, więc model
+     wypełnia pięć — mimo jawnego „pomijaj punkty, których w dokumencie nie ma";
+   - **myli semantykę pól** — w decyzji wpisał podstawę prawną („art. 28 Prawa budowlanego") w
+     „Termin / data", a właściwy termin (14 dni na odwołanie) przeniósł do „Oczekiwana akcja".
+   Oba dotykają tego, po co produkt istnieje: **do kiedy** i **co zrobić**. Sprawdzian formatu jest
+   na nie ślepy. Kierunek: zalążek harnessu (warianty promptu × pisma × ≥2 niezależne przebiegi;
+   próbka musi zawierać pismo z tabelą, jednozdaniową notatkę i pismo długie), potem wzorcowe
+   („złote") streszczenia i porównanie z nimi. Osobno: 4.5B trzyma format luźniej niż 11B.
+
+   **Metodologia — pułapki zmierzone na własnej skórze (2026-07-08):** walidator formatu potrafi
+   potwierdzać to, czego szukasz (`akapit=TAK`, bo `Typ pisma:` zaczyna się wielką literą); trzy
+   pisma to nie próbka (czwarte obaliło poprawkę); **`temperature=0` NIE gwarantuje determinizmu**
+   w Ollamie — powtórzenia w jednej sesji próbkują ten sam bufor prefiksu, więc mierzą zero, a ta
+   sama komórka potrafi dać `3/3` i `0/3` w dwóch przebiegach. Stąd wymóg: **dwa niezależne
+   przebiegi** i **zawsze czytać surowe odpowiedzi**, nie tylko licznik.
 6. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
    źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
 

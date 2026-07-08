@@ -7,6 +7,7 @@ pytest-asyncio -> `asyncio.run` (jak w pozostałych testach projektu).
 """
 
 import asyncio
+import re
 
 from app.llm import FakeLLMClient, LLMClient, LLMResult, LLMUsage
 from app.summarization.service import _SYSTEM_PROMPT, EmptyInputError, SummarizationService
@@ -75,7 +76,7 @@ def test_build_metadata_przepisuje_model_usage_i_flagi():
 
 
 def test_summarize_przekazuje_system_prompt_i_max_tokens():
-    """Domena dokłada system prompt (rola + format hybrydowy) i `max_tokens`, a dokument ląduje w userze."""
+    """Domena dokłada system prompt (rola + format wypunktowania) i `max_tokens`, a dokument ląduje w userze."""
     llm = _RecordingLLM()
     svc = SummarizationService(llm, max_output_tokens=321)
 
@@ -84,27 +85,38 @@ def test_summarize_przekazuje_system_prompt_i_max_tokens():
     call = llm.calls[0]
     assert call["system"] is not None
     assert "dekretując" in call["system"]          # rola pod dekretację
-    assert "• Typ pisma" in call["system"]         # narzucony format hybrydowy (punkty)
+    assert "• Typ pisma" in call["system"]         # narzucony format: wypunktowanie pól
     assert call["max_tokens"] == 321
     assert call["temperature"] == 0.0
     assert "Pismo z Urzędu Skarbowego" in call["user"]   # dokument w wiadomości usera
 
 
-def test_system_prompt_zawiera_jednostrzalowy_przyklad():
-    """Przykład NIE jest ozdobą: bez niego Bielik 11B gubi akapit otwierający (zmierzone, patrz komentarz w service.py).
+def test_system_prompt_zada_wypunktowania_wszystkich_pol():
+    """Kontrakt formatu: pięć pól, każde jako punkt „• ”. Bez tego streszczenie traci strukturę."""
+    for pole in ("Typ pisma", "Nadawca", "Czego dotyczy", "Termin / data", "Oczekiwana akcja"):
+        assert f"• {pole}" in _SYSTEM_PROMPT
 
-    Strażnik przed „uproszczeniem" promptu — sam opis formatu, bez pokazanego wzoru odpowiedzi,
-    daje samo wypunktowanie. Akapit „o co chodzi" jest tym, po co dekretujący czyta streszczenie.
+
+def test_system_prompt_nie_numeruje_wlasnego_opisu_formatu():
+    """Strażnik przed nawrotem defektu: numeracja W OPISIE formatu przecieka do WYJŚCIA.
+
+    Historyczny błąd (2026-07-08): opis brzmiał „1. streszczenie… 2. wypunktowanie…”, a Bielik
+    brał tę numerację za wzór odpowiedzi i zwracał listę `1.`–`9.` zamiast punktów. Model
+    naśladuje najbardziej konkretny wzorzec w prompcie — a numerowana lista nim jest.
     """
-    assert "Przykład poprawnej odpowiedzi" in _SYSTEM_PROMPT
+    linie = _SYSTEM_PROMPT.splitlines()
+    numerowane = [l for l in linie if re.match(r"^\s*\d+[.)]\s", l)]
+    assert not numerowane, f"opis formatu znów zawiera numerację: {numerowane}"
 
-    # Akapit wzorca stoi PRZED wypunktowaniem wzorca — kolejność jest tym, co model naśladuje.
-    akapit_wzorca = _SYSTEM_PROMPT.index("Urząd Skarbowy wzywa spółkę")
-    punkty_wzorca = _SYSTEM_PROMPT.index("• Typ pisma: Wezwanie")
-    assert akapit_wzorca < punkty_wzorca
 
-    # Przykład dotyczy innego pisma niż typowe wejścia — inaczej jego treść wycieka do odpowiedzi.
-    assert "nie kopiuj jego treści" in _SYSTEM_PROMPT
+def test_system_prompt_nie_obiecuje_akapitu():
+    """Akapit otwierający świadomie usunięty (patrz macierz pomiarów w service.py).
+
+    Model go nie oddaje bez przykładu jako tury `assistant`; obietnica w prompcie bez pokrycia
+    w wyjściu to gorzej niż jej brak — dokumentacja i kontrakt zaczynają kłamać.
+    """
+    assert "akapit" not in _SYSTEM_PROMPT.lower()
+    assert "streszczenie naturalnym językiem" not in _SYSTEM_PROMPT
 
 
 def test_summarize_metadane_z_oryginalnej_dlugosci_i_truncacja():

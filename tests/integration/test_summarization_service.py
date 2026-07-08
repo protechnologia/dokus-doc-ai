@@ -3,8 +3,8 @@
 Marker: integration_llm. Wymaga LLM_PROVIDER=openai + LLM_API_KEY (z .env/ENV); inaczej SKIP
 (spójnie z konwencją „usługa niedostępna -> skip, nie fail”).
 
-Cel, którego atrapa (`FakeLLMClient`) NIE dowiedzie: czy nasz PROMPT HYBRYDOWY (system po
-polsku + szablon usera) faktycznie daje sensowne, polskie streszczenie z prawdziwego modelu,
+Cel, którego atrapa (`FakeLLMClient`) NIE dowiedzie: czy nasz PROMPT (system po polsku +
+szablon usera) faktycznie daje sensowne, polskie streszczenie z prawdziwego modelu,
 i czy metadane (model/usage) wracają realnie wypełnione. To NIE jest test jakości treści —
 asercje są MIĘKKIE (niepuste, polskie diakrytyki, model/usage obecne). Koszt świadomie mały:
 jedno krótkie pismo + ograniczony `max_output_tokens`.

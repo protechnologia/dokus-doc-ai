@@ -134,7 +134,7 @@ class SummarizeMetadata(BaseModel):
 
 
 class SummarizeResponse(BaseModel):
-    """Wyjscie `POST /summarize` — streszczenie (hybryda: akapit + punkty) + metadane."""
+    """Wyjscie `POST /summarize` — streszczenie (wypunktowanie kluczowych pól) + metadane."""
 
     summary: str               = Field(description="Streszczenie dokumentu (jeden tekst).")
     metadata: SummarizeMetadata = Field(description="Metadane: model, dlugosc wejscia, truncacja, zuzycie.")
@@ -192,7 +192,7 @@ class SummarizeDocumentResponse(BaseModel):
     `summarization.truncated` mowi, czy model widzial tylko poczatek.
     """
 
-    summary: str                     = Field(description="Streszczenie dokumentu (hybryda: akapit + punkty).")
+    summary: str                     = Field(description="Streszczenie dokumentu (wypunktowanie kluczowych pól).")
     text: str                        = Field(description="Pelny wyekstrahowany tekst (przed truncacja pod LLM).")
     extraction: ExtractMetadata      = Field(description="Metadane etapu ekstrakcji (MIME, jezyk, dlugosc, OCR, strony).")
     summarization: SummarizeMetadata = Field(description="Metadane etapu summaryzacji (model, dlugosc wejscia, truncacja, zuzycie).")

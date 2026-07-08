@@ -41,7 +41,8 @@ Pełny przebieg (endpoint `POST /extract-and-summarize`) krok po kroku:
 ## Przykład działania
 
 Poniższy przykład pokazuje realne podsumowanie wygenerowane przez naszą usługę
-(`POST /summarize`, dostawca `openai`, model `gpt-4o-mini`) dla fikcyjnego pisma.
+(`POST /summarize`, dostawca `openai`, model `Bielik-11B-v3.0-Instruct` przez Open WebUI)
+dla fikcyjnego pisma.
 
 **Wejście (treść pisma):**
 
@@ -70,19 +71,22 @@ Prof. Antoni Zagubiony
 
 **Wygenerowane podsumowanie** (pole `summary` w odpowiedzi):
 
-> Pismo dotyczy skargi prof. Antoniego Zagubionego na bezczynność Ministerstwa ds.
-> Kontroli Anomalii Czasoprzestrzennych w sprawie lokalnej anomalii czasowej, która
-> uniemożliwia mu normalne funkcjonowanie. Wnioskodawca wzywa do natychmiastowego
-> działania.
->
-> - **Typ pisma:** Skarga
-> - **Nadawca:** Prof. Antoni Zagubiony
-> - **Czego dotyczy:** Bezczynność w sprawie anomalii czasowej
-> - **Termin / data:** 15 dni od 22 czerwca 2026 roku
-> - **Oczekiwana akcja:** Wysłanie ekipy technicznej z generatorem antygrawitacyjnym
+> • Typ pisma: Skarga na bezczynność urzędu
+> • Nadawca: Prof. Antoni Zagubiony, Instytut Fizyki Niekonwencjonalnej
+> • Czego dotyczy: Permanentna pętla czasu w rejonie ul. Paradoksalnej uniemożliwiająca normalne
+> funkcjonowanie nadawcy od 15 dni, zaczynając każdy poranek na nowo w dniu 22 czerwca 2026 roku
+> o godzinie 06:00
+> • Termin / data: Od dokładnie 15 dni (data początkowa nieokreślona, ale skarga złożona po tym okresie)
+> • Oczekiwana akcja: Natychmiastowe wysłanie ekipy technicznej z generatorem antygrawitacyjnym
+> w celu przywrócenia naturalnego biegu czasu
 
-Streszczenie zachowuje narzucony przez prompt format hybrydowy (krótki akapit +
-wypunktowane kluczowe elementy pod dekretację) i nie zmyśla danych spoza pisma.
+Streszczenie zachowuje narzucony przez prompt format: wypunktowanie kluczowych elementów pod
+dekretację, wyłącznie tych obecnych w piśmie. Akapitu otwierającego **nie ma** — świadomie
+(uzasadnienie i pomiary: `_SYSTEM_PROMPT` w [api/app/summarization/service.py](api/app/summarization/service.py)).
+
+> Jakość **treści** nie jest dziś niczym mierzona. Model potrafi wypełnić pole, którego pismo nie
+> zawiera, albo pomylić semantykę pól (np. wpisać podstawę prawną w „Termin / data"). Patrz TODO
+> nr 5 w [CLAUDE.md](CLAUDE.md).
 
 ## Uruchomienie
 
@@ -295,8 +299,8 @@ Przykładowe żądanie:
 }
 ```
 
-Wyjście (`SummarizeResponse`) — streszczenie (**hybryda: krótki akapit + wypunktowane
-kluczowe elementy**) jako jeden tekst + metadane:
+Wyjście (`SummarizeResponse`) — streszczenie (**wypunktowanie kluczowych pól**) jako
+jeden tekst + metadane:
 
 ```json
 {
@@ -405,7 +409,7 @@ Pola odpowiedzi:
 
 | Pole | Opis |
 |---|---|
-| `summary` | Streszczenie pod dekretację (hybryda: krótki akapit + wypunktowane kluczowe elementy). |
+| `summary` | Streszczenie pod dekretację (wypunktowanie kluczowych pól: typ pisma, nadawca, czego dotyczy, termin, oczekiwana akcja). |
 | `text` | **Pełny** wyekstrahowany tekst (przed truncacją pod okno modelu); gdy był dłuższy niż `LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko początek. |
 | `extraction` | Metadane etapu ekstrakcji — pola jak w `POST /extract` wyżej. |
 | `summarization` | Metadane etapu streszczenia — pola jak w `POST /summarize` wyżej. |
@@ -466,7 +470,7 @@ $client = new DocAiClient(new Config('http://localhost:8000'));
 try {
     $wynik = $client->extractAndSummarizeFile('/sciezka/pismo.pdf');
 
-    echo $wynik->summary;                         // streszczenie (akapit + punkty)
+    echo $wynik->summary;                         // streszczenie (wypunktowanie pól)
     echo $wynik->extraction->contentType;         // np. 'application/pdf'
     echo $wynik->summarization->usage->totalTokens;
 } catch (ApiException $e) {

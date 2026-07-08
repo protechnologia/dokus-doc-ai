@@ -38,7 +38,7 @@ class PipelineResult(BaseModel):
     `input_chars` summaryzacji) i by każdy etap był diagnozowalny osobno.
     """
 
-    summary: str                        = Field(description="Streszczenie dokumentu (hybryda: akapit + punkty).")
+    summary: str                        = Field(description="Streszczenie dokumentu (wypunktowanie kluczowych pól).")
     text: str                           = Field(description="Pełny wyekstrahowany tekst (przed truncacją pod LLM).")
     extraction: ExtractionMetadata      = Field(description="Metadane etapu ekstrakcji (MIME, język, długość, OCR, strony).")
     summarization: SummarizationMetadata = Field(description="Metadane etapu summaryzacji (model, długość wejścia, truncacja, zużycie).")
