@@ -232,18 +232,43 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    — nie mieści się w ŻADNYM oknie Bielika 11B (max 32 768, a i to z przelewem VRAM).
 4. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
    rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
-5. **Ewaluacja jakości streszczeń — nadal BRAK harnessu.** To serce produktu; mierzyć, nie „na oko".
-   Format jest dziś ustawiony pomiarem (macierz przy `_SYSTEM_PROMPT`), ale **treść nie jest
-   mierzona niczym**, a ma zmierzone wady, powtarzalne przy `temperature=0`:
-   - **zmyśla brakujące pole** — przy zwykłym przypomnieniu o zebraniu wypełnia „Oczekiwana akcja:
-     potwierdzenie obecności", choć pismo o tym milczy. Szablon ma pięć wierszy, więc model
-     wypełnia pięć — mimo jawnego „pomijaj punkty, których w dokumencie nie ma";
-   - **myli semantykę pól** — w decyzji wpisał podstawę prawną („art. 28 Prawa budowlanego") w
-     „Termin / data", a właściwy termin (14 dni na odwołanie) przeniósł do „Oczekiwana akcja".
-   Oba dotykają tego, po co produkt istnieje: **do kiedy** i **co zrobić**. Sprawdzian formatu jest
-   na nie ślepy. Kierunek: zalążek harnessu (warianty promptu × pisma × ≥2 niezależne przebiegi;
-   próbka musi zawierać pismo z tabelą, jednozdaniową notatkę i pismo długie), potem wzorcowe
-   („złote") streszczenia i porównanie z nimi. Osobno: 4.5B trzyma format luźniej niż 11B.
+5. **Ewaluacja jakości streszczeń — pierwszy pomiar JEST, automatu (harnessu) wciąż brak.** To serce
+   produktu; mierzyć, nie „na oko". Powstał **golden set 20 syntetycznych pism** w
+   `samples/summarization/` (`01_…`–`20_….docx`) — syntetyczne, więc świadomie **poza `.gitignore`**,
+   trzymane w repo (stary `samples/*`-ignore i README świadomie skasowane — `samples/` **nie jest już
+   w ogóle ignorowane**; realny wrażliwy `samples/sample_01.pdf` z testu integracyjnego trzymamy poza
+   repo **ręcznie**, gitignore już go nie chroni). Pierwszy przebieg
+   **LLM-as-judge** (sędzia: Claude Fable 5, będący **zarazem autorem** pism; ocena 0–5 za
+   fakty/kompletność/halucynacje/użyteczność) spisano w `raport_ewaluacja_goldenset.docx`. Średnia
+   **~4,1/5**. Zastrzeżenia do metody: **jeden** przebieg, sędzia = autor dokumentów (nie niezależny),
+   brak „złotych" streszczeń jako odniesienia — to zalążek, nie harness.
+
+   Zmierzone wady (prompt 5-polowy, `temperature=0`):
+   - **twardych halucynacji brak** (0/20 dopisanych faktów — „niczego nie zmyślaj" działa; kwoty,
+     sygnatury, daty przepisywane bezbłędnie, proste inferencje dat poprawne), ALE **obowiązkowe pole
+     wymusza konfabulację** przy piśmie o stanie dokonanym: uchwała wspólnoty (dok. 17) → „Oczekiwana
+     akcja: zatwierdzenie uchwały", choć uchwała już podjęta, oraz „realizacja od maja" zamiast „wzrost
+     zaliczki od maja". To ta sama wada „pięć wierszy → pięć wypełnień" z macierzy formatu (dawniej:
+     zmyślone „potwierdzenie obecności");
+   - **myli/rozmywa semantykę pól** — dawniej podstawa prawna („art. 28 Prawa budowlanego") w „Termin /
+     data", a właściwy termin w „Oczekiwana akcja"; w raporcie **niejednoznaczne „Termin / data"** (raz
+     data pisma, raz termin merytoryczny, raz oba, raz brak) → bez rozdzielenia „daty pisma" od
+     „kluczowych terminów" pole daje szum w metadanych;
+   - **systematyczne pomijanie kwot** — kwota przeżywa tylko, gdy zmieści się w „Czego dotyczy" /
+     „Oczekiwana akcja"; poza tym ginie (wartość faktury, cena oferty, wynagrodzenie z zaświadczenia);
+   - **systematyczny brak adresata** — 19/20 bez adresata, a to on decyduje o **routingu** dekretacji;
+     model potrafi go wyciągnąć (dok. 16 sam dodał „Adresaci") — blokuje go zamknięta lista pól;
+   - **łamanie kontraktu formatu** — 4 pisma (08/12/16/20) dołożyły pola spoza listy („Zarzuty",
+     „Załącznik", „Adresaci"…): merytorycznie cenne, dla parsera groźne (niezdefiniowane klucze).
+
+   Wady dotykają tego, po co produkt istnieje: **do kiedy**, **co zrobić**, **do kogo**, **za ile**.
+   Sprawdzian formatu jest na nie ślepy. Rekomendacja raportu (**kierunek, NIE zamknięta decyzja** —
+   zmiana promptu jest świadoma, patrz `SummarizationService`): rozszerzyć schemat pól (dodać
+   Adresat / Sygnatura / Kwota, rozdzielić „Datę pisma" od „Kluczowych terminów", dodać „Inne istotne")
+   i dać „Oczekiwanej akcji" wyjście dla pism informacyjnych/dokonanych („do wiadomości / brak wymaganej
+   akcji"). Dalej: **≥2 niezależne przebiegi**, **niezależny sędzia**, „złote" streszczenia jako
+   odniesienie; próbka musi zawierać pismo z tabelą, jednozdaniową notatkę i pismo długie. Osobno: 4.5B
+   trzyma format luźniej niż 11B.
 
    **Metodologia — pułapki zmierzone na własnej skórze (2026-07-08):** walidator formatu potrafi
    potwierdzać to, czego szukasz (`akapit=TAK`, bo `Typ pisma:` zaczyna się wielką literą); trzy
