@@ -72,8 +72,9 @@ class TransportException extends DocAiException
 
 /**
  * Do czego: API odpowiedzialo kodem bledu HTTP (4xx/5xx). Niesie kod statusu, tresc `detail`
- * z ciala odpowiedzi (FastAPI zwraca `{"detail": "..."}`) oraz `X-Request-ID` do korelacji z
- * logami serwera.
+ * z ciala odpowiedzi (FastAPI zwraca `{"detail": "..."}` albo — przy bledach walidacji 422 —
+ * `{"detail": [...]}`, ktore skladamy w jeden tekst) oraz `X-Request-ID` do korelacji z logami
+ * serwera.
  *
  * Flow: budowany przez `DocAiClient` z odpowiedzi non-2xx (`ApiException::fromResponse`).
  * Helpery `isClientError()`/`isServerError()` rozrozniaja, czy zawinilo wejscie (4xx), czy
@@ -104,25 +105,36 @@ class ApiException extends DocAiException
     /**
      * Opis metody:
      * Zbuduj wyjatek z odpowiedzi HTTP — wyluskaj `detail` z JSON-a FastAPI (gdy jest) oraz
-     * `X-Request-ID`. Tolerancyjnie: gdy cialo nie jest JSON-em, `detail` zostaje `null`, a
-     * surowe cialo laduje do `$body`.
+     * `X-Request-ID`. FastAPI zwraca `detail` w DWOCH ksztaltach: tekst (bledy zglaszane przez
+     * serwis, np. 413/502) albo tablica bledow walidacji zadania (422 z pydantic, np. brak pola,
+     * zly typ, niepoprawne proporcje) — tablice skladamy w jeden tekst (`formatValidationErrors`),
+     * zeby przyczyna byla w `detail`/komunikacie, a nie tylko w surowym ciele. Tolerancyjnie: gdy
+     * cialo nie jest JSON-em, `detail` zostaje `null`, a surowe cialo laduje do `$body`.
      *
      * Przyklad argumentow:
      *     status=413, body='{"detail":"Plik za duzy: ..."}', requestId='abc-123'
+     *     status=422, body='{"detail":[{"loc":["body","tail_percent"],"msg":"Input should be a valid integer"}]}'
      *
      * Przyklad wyniku:
      *     ApiException(statusCode=413, detail='Plik za duzy: ...', requestId='abc-123')
+     *     ApiException(statusCode=422, detail='body.tail_percent: Input should be a valid integer')
      */
     public static function fromResponse(Response $response): self
     {
-        // FastAPI dla bledow zwraca {"detail": "..."}; sprobuj wyluskac, ale nie wymuszaj.
+        // FastAPI dla bledow zwraca {"detail": ...}; sprobuj wyluskac, ale nie wymuszaj.
         $detail = null;
         // SWIADOMIE bez JSON_THROW_ON_ERROR: na nie-JSON body `json_decode` zwroci null zamiast
         // rzucic — budowa wyjatku opisujacego PIERWOTNY blad HTTP nie moze sie wywrocic na parsowaniu
         // (drugi wyjatek zamaskowalby prawdziwy kod 4xx/5xx). Surowe cialo i tak zachowujemy w `$body`.
         $decoded = json_decode($response->body, true);
-        if (is_array($decoded) && isset($decoded['detail']) && is_string($decoded['detail'])) {
-            $detail = $decoded['detail'];
+        $raw     = is_array($decoded) ? ($decoded['detail'] ?? null) : null;
+
+        // Tekst (HTTPException serwisu) -> bierzemy wprost.
+        if (is_string($raw)) {
+            $detail = $raw;
+        // Tablica (bledy walidacji pydantic, 422) -> skladamy "loc: msg; loc: msg".
+        } elseif (is_array($raw)) {
+            $detail = self::formatValidationErrors($raw);
         }
 
         return new self(
@@ -131,6 +143,35 @@ class ApiException extends DocAiException
             requestId:  $response->requestId,
             body:       $response->body,
         );
+    }
+
+    /**
+     * Opis metody:
+     * Zloz tablice bledow walidacji FastAPI w jeden czytelny tekst: kazdy blad jako
+     * "sciezka.pola: komunikat", bledy rozdzielone "; ". Wpisy bez `msg` pomijamy; `loc` bywa
+     * lista stringow i indeksow (np. ["body", "items", 0]) — laczymy kropka. Brak jakiegokolwiek
+     * uzytecznego wpisu -> `null` (wtedy przyczyna zostaje tylko w surowym `$body`).
+     *
+     * Przyklad argumentow:
+     *     errors=[['loc' => ['body', 'text'], 'msg' => 'Field required'],
+     *             ['loc' => ['body'], 'msg' => 'Value error, head_percent + tail_percent nie moze przekraczac 100 (jest 110).']]
+     *
+     * Przyklad wyniku:
+     *     'body.text: Field required; body: Value error, head_percent + tail_percent nie moze przekraczac 100 (jest 110).'
+     */
+    private static function formatValidationErrors(array $errors): ?string
+    {
+        $parts = [];
+        foreach ($errors as $error) {
+            // Wpis musi byc obiektem z tekstowym `msg` — inaczej nie ma czego pokazac.
+            if (!is_array($error) || !isset($error['msg']) || !is_string($error['msg'])) {
+                continue;
+            }
+            // Sciezka pola (gdy jest) jako prefiks: "body.tail_percent: ...".
+            $loc     = isset($error['loc']) && is_array($error['loc']) ? implode('.', array_map('strval', $error['loc'])) : '';
+            $parts[] = $loc !== '' ? $loc . ': ' . $error['msg'] : $error['msg'];
+        }
+        return $parts !== [] ? implode('; ', $parts) : null;
     }
 
     /** Czy to blad po stronie wejscia/klienta (4xx) — np. zle base64, plik za duzy, pusty plik. */
@@ -425,16 +466,83 @@ final class ExtractResult
 }
 
 /**
+ * Do czego: jedna czesc wejscia modelu po trunkacji (poczatek / srodek / koniec) — odbicie
+ * `SummarizePart` z API. `percent` to zastosowana proporcja budzetu; `start`/`end` to zakres
+ * zachowanego fragmentu, `null` gdy proporcja wynosi 0 (czesc wylaczona).
+ *
+ * Zakres liczony w ZNAKACH Unicode (nie w bajtach), `start` wlacznie, `end` wylacznie, wzgledem
+ * tekstu po stronie klienta: `text` wyslany do `summarize()` albo `DocumentSummary::$text`.
+ * Fragment wycina sie przez `mb_substr($text, $part->start, $part->end - $part->start, 'UTF-8')`
+ * — NIE przez `substr` (bajty; polskie znaki w UTF-8 zajmuja po 2 bajty).
+ */
+final class SummarizePart
+{
+    public function __construct(
+        public readonly int  $percent,
+        public readonly ?int $start = null,
+        public readonly ?int $end = null,
+    ) {
+    }
+
+    /**
+     * Opis metody: Zbuduj z tablicy czesci odpowiedzi API; `start`/`end` = null zostaja null.
+     * Przyklad argumentow: ['percent' => 45, 'start' => 0, 'end' => 40467]
+     * Przyklad wyniku: SummarizePart(percent=45, start=0, end=40467)
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            percent: (int) ($data['percent'] ?? 0),
+            start:   isset($data['start']) ? (int) $data['start'] : null,
+            end:     isset($data['end'])   ? (int) $data['end']   : null,
+        );
+    }
+}
+
+/**
+ * Do czego: trzy czesci wejscia modelu po trunkacji — odbicie `SummarizeParts` z API. Wystepuje
+ * tylko, gdy tekst przekroczyl limit znakow modelu (`SummarizeMetadata::$truncated` = true).
+ */
+final class SummarizeParts
+{
+    public function __construct(
+        public readonly SummarizePart $head,
+        public readonly SummarizePart $middle,
+        public readonly SummarizePart $tail,
+    ) {
+    }
+
+    /**
+     * Opis metody: Zbuduj z obiektu `parts` odpowiedzi API (klucze `head`/`middle`/`tail`).
+     * Przyklad argumentow: ['head' => ['percent' => 45, 'start' => 0, 'end' => 40467], 'middle' => [...], 'tail' => [...]]
+     * Przyklad wyniku: SummarizeParts(head=SummarizePart(percent=45, ...), middle=..., tail=...)
+     */
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            head:   SummarizePart::fromArray((array) ($data['head']   ?? [])),
+            middle: SummarizePart::fromArray((array) ($data['middle'] ?? [])),
+            tail:   SummarizePart::fromArray((array) ($data['tail']   ?? [])),
+        );
+    }
+}
+
+/**
  * Do czego: metadane summaryzacji — odbicie `SummarizeMetadata` z API. `truncated` mowi, czy
- * model widzial tylko poczatek tekstu (truncacja pod okno kontekstu).
+ * tekst przekroczyl limit znakow modelu; wtedy model dostal tylko poczatek, fragment ze srodka
+ * i koniec dokumentu (ze znacznikami pominiecia), a `parts` opisuje, ktore to fragmenty.
+ * `sentChars` to dlugosc tekstu realnie wyslanego do modelu. `parts` = null dokladnie wtedy,
+ * gdy `truncated` = false.
  */
 final class SummarizeMetadata
 {
     public function __construct(
-        public readonly string $model,
-        public readonly int    $inputChars,
-        public readonly bool   $truncated,
-        public readonly Usage  $usage,
+        public readonly string          $model,
+        public readonly int             $inputChars,
+        public readonly bool            $truncated,
+        public readonly Usage           $usage,
+        public readonly int             $sentChars = 0,
+        public readonly ?SummarizeParts $parts = null,
     ) {
     }
 
@@ -445,6 +553,8 @@ final class SummarizeMetadata
             inputChars: (int) ($data['input_chars'] ?? 0),
             truncated:  (bool) ($data['truncated'] ?? false),
             usage:      Usage::fromArray((array) ($data['usage'] ?? [])),
+            sentChars:  (int) ($data['sent_chars'] ?? 0),
+            parts:      isset($data['parts']) && is_array($data['parts']) ? SummarizeParts::fromArray($data['parts']) : null,
         );
     }
 }
@@ -472,8 +582,9 @@ final class SummarizeResult
 /**
  * Do czego: odpowiedz `POST /extract-and-summarize` (pelny pipeline) — streszczenie + PELNY
  * wyekstrahowany tekst + metadane OBU etapow (zagniezdzone, by uniknac kolizji `char_count`
- * ekstrakcji vs `input_chars` summaryzacji). `text` to tekst PRZED truncacja pod LLM —
- * `summarization->truncated` mowi, czy model widzial tylko poczatek.
+ * ekstrakcji vs `input_chars` summaryzacji). `text` to PELNY tekst, PRZED truncacja pod LLM —
+ * `summarization->truncated` mowi, czy model widzial tylko fragmenty, a `summarization->parts`
+ * wskazuje ich zakresy w `text`.
  */
 final class DocumentSummary
 {
@@ -514,6 +625,7 @@ final class DocumentSummary
  *     $ex     = $client->extractFile('/tmp/pismo.pdf');             // POST /extract
  *     $sum    = $client->summarize('Dluga tresc pisma...');         // POST /summarize
  *     $doc    = $client->extractAndSummarizeFile('/tmp/pismo.pdf'); // POST /extract-and-summarize
+ *     $doc    = $client->extractAndSummarizeFile('/tmp/pismo.pdf', headPercent: 45, tailPercent: 55); // bez srodka
  */
 final class DocAiClient
 {
@@ -597,20 +709,25 @@ final class DocAiClient
      * Streszcz gotowy TEKST (`POST /summarize`) — bez ekstrakcji. Wejscie to czysty string;
      * serwer skleja prompt (wypunktowanie kluczowych pól) i pilnuje truncacji pod okno modelu.
      *
-     * Przyklad argumentow: text='Urzad Skarbowy wzywa do zaplaty zaleglosci...'
-     * Przyklad wyniku: SummarizeResult(summary='...', metadata=SummarizeMetadata(model='gpt-4o-mini', ...))
+     * Proporcje trunkacji (opcjonalne, liczby calkowite 0–100) dzialaja tylko dla tekstu
+     * dluzszego niz limit modelu: `headPercent` = poczatek, `tailPercent` = koniec, srodek dostaje
+     * reszte (100 - head - tail); 0 wylacza czesc. `null` = nie wysylamy -> domyslne serwera (45/35).
+     *
+     * Przyklad argumentow: text='Urzad Skarbowy wzywa do zaplaty zaleglosci...', headPercent=45, tailPercent=55
+     * Przyklad wyniku: SummarizeResult(summary='...', metadata=SummarizeMetadata(model='gpt-4o-mini', truncated=false, parts=null, ...))
      *
      * Raises:
-     *     ApiException(422): puste/same biale znaki wejscie.
+     *     ApiException(422): puste/same biale znaki wejscie / proporcje spoza 0–100 albo o sumie powyzej 100.
      *     ApiException(500): zla konfiguracja dostawcy LLM po stronie serwera / zly klucz.
      *     ApiException(502): inny blad po stronie dostawcy LLM.
      *     ApiException(503): dostawca LLM dlawi (limit/kwota).
      *     ApiException(504): dostawca LLM nie odpowiedzial w czasie.
      *     TransportException: nie udalo sie dobic do API.
      */
-    public function summarize(string $text): SummarizeResult
+    public function summarize(string $text, ?int $headPercent = null, ?int $tailPercent = null): SummarizeResult
     {
-        $data = $this->requestJson('POST', '/summarize', ['text' => $text]);
+        $body = $this->withTruncationParams(['text' => $text], $headPercent, $tailPercent);
+        $data = $this->requestJson('POST', '/summarize', $body);
         return SummarizeResult::fromArray($data);
     }
 
@@ -618,22 +735,30 @@ final class DocAiClient
      * Opis metody:
      * Pelny pipeline na pliku JUZ w base64 (`POST /extract-and-summarize`): plik -> tekst ->
      * streszczenie w jednym wywolaniu. Dla sciezki na dysku uzyj `extractAndSummarizeFile()`.
+     * Proporcje trunkacji jak w `summarize()` — tna TYLKO wejscie modelu; `text` w wyniku jest pelny.
      *
      * Przyklad argumentow:
-     *     contentBase64='JVBERi0xLjcK...', filename='pismo.pdf', contentType='application/pdf'
+     *     contentBase64='JVBERi0xLjcK...', filename='pismo.pdf', contentType='application/pdf',
+     *     headPercent=null, tailPercent=null
      *
      * Przyklad wyniku:
      *     DocumentSummary(summary='Urzad wzywa...', text='Pelna tresc...',
      *         extraction=ExtractMetadata(...), summarization=SummarizeMetadata(...))
      *
      * Raises:
-     *     ApiException(413): plik za duzy. ApiException(422): zle base64 / pusty plik / brak tresci.
+     *     ApiException(413): plik za duzy. ApiException(422): zle base64 / pusty plik / brak tresci / zle proporcje.
      *     ApiException(500): config LLM. ApiException(502): Tika/LLM. ApiException(503): limit LLM.
      *     ApiException(504): timeout LLM. TransportException: nie udalo sie dobic do API.
      */
-    public function extractAndSummarize(string $contentBase64, ?string $filename = null, ?string $contentType = null): DocumentSummary
-    {
+    public function extractAndSummarize(
+        string $contentBase64,
+        ?string $filename = null,
+        ?string $contentType = null,
+        ?int $headPercent = null,
+        ?int $tailPercent = null,
+    ): DocumentSummary {
         $body = $this->buildDocumentBody($contentBase64, $filename, $contentType);
+        $body = $this->withTruncationParams($body, $headPercent, $tailPercent);
         $data = $this->requestJson('POST', '/extract-and-summarize', $body);
         return DocumentSummary::fromArray($data);
     }
@@ -641,22 +766,47 @@ final class DocAiClient
     /**
      * Opis metody:
      * Wczytaj plik z dysku i przepusc przez pelny pipeline (`POST /extract-and-summarize`).
-     * Wygodna metoda end-to-end: oryginalny plik -> zwrotnie streszczenie.
+     * Wygodna metoda end-to-end: oryginalny plik -> zwrotnie streszczenie. Proporcje trunkacji
+     * jak w `summarize()`; wygodnie przez argumenty nazwane: `headPercent: 45, tailPercent: 55`.
      *
-     * Przyklad argumentow: path='/tmp/pismo.pdf', contentType=null
+     * Przyklad argumentow: path='/tmp/pismo.pdf', contentType=null, headPercent=45, tailPercent=55
      * Przyklad wyniku: DocumentSummary(summary='...', text='...', extraction=..., summarization=...)
      *
      * Raises:
      *     DocAiException: pliku nie da sie odczytac.
      *     (oraz jak `extractAndSummarize()`)
      */
-    public function extractAndSummarizeFile(string $path, ?string $contentType = null): DocumentSummary
-    {
+    public function extractAndSummarizeFile(
+        string $path,
+        ?string $contentType = null,
+        ?int $headPercent = null,
+        ?int $tailPercent = null,
+    ): DocumentSummary {
         [$base64, $filename] = $this->readFileAsBase64($path);
-        return $this->extractAndSummarize($base64, $filename, $contentType);
+        return $this->extractAndSummarize($base64, $filename, $contentType, $headPercent, $tailPercent);
     }
 
     // --- Wewnetrzne helpery -----------------------------------------------------------
+
+    /**
+     * Opis metody:
+     * Dolacz do ciala zadania proporcje trunkacji (`head_percent`/`tail_percent`) — tylko te
+     * podane; `null` pomijamy, bo brak klucza = domyslna serwera, a jawny `null` serwer odrzuca
+     * (422). Walidacji zakresu tu NIE dublujemy — robi ja serwer i zwraca czytelny `detail`.
+     *
+     * Przyklad argumentow: body=['text' => 'Tresc...'], headPercent=45, tailPercent=null
+     * Przyklad wyniku: ['text' => 'Tresc...', 'head_percent' => 45]
+     */
+    private function withTruncationParams(array $body, ?int $headPercent, ?int $tailPercent): array
+    {
+        if ($headPercent !== null) {
+            $body['head_percent'] = $headPercent;
+        }
+        if ($tailPercent !== null) {
+            $body['tail_percent'] = $tailPercent;
+        }
+        return $body;
+    }
 
     /**
      * Opis metody:

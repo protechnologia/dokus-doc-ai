@@ -11,12 +11,20 @@ from app.summarization.service import (
     SummarizationResult,
     SummarizationService,
 )
+from app.summarization.truncation import DEFAULT_HEAD_PERCENT, DEFAULT_TAIL_PERCENT, OMISSION_MARKER, TextPart, TextParts, TextTruncator
 
 __all__ = [
     # domena
     "SummarizationService",
     "SummarizationResult",
     "SummarizationMetadata",
+    # trunkacja wejścia modelu (początek / środek / koniec)
+    "TextTruncator",
+    "TextParts",
+    "TextPart",
+    "DEFAULT_HEAD_PERCENT",
+    "DEFAULT_TAIL_PERCENT",
+    "OMISSION_MARKER",
     # wyjatki domenowe
     "SummarizationError",
     "EmptyInputError",

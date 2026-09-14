@@ -13,17 +13,19 @@ from fastapi.testclient import TestClient
 from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError, LLMUsage
 from app.main import app
 from app.routers.summarize import _get_summarization_service
-from app.summarization import EmptyInputError, SummarizationMetadata, SummarizationResult
+from app.summarization import EmptyInputError, SummarizationMetadata, SummarizationResult, TextPart, TextParts
 
 
 class _StubService:
-    """Atrapa `SummarizationService`: oddaje zadany wynik albo rzuca zadany wyjatek (duck-typing)."""
+    """Atrapa `SummarizationService`: oddaje zadany wynik albo rzuca zadany wyjatek; nagrywa argumenty (duck-typing)."""
 
     def __init__(self, *, result: SummarizationResult | None = None, error: Exception | None = None) -> None:
+        self.calls: list[dict] = []
         self._result = result
         self._error = error
 
-    async def summarize(self, *, text: str) -> SummarizationResult:
+    async def summarize(self, *, text: str, head_percent: int, tail_percent: int) -> SummarizationResult:
+        self.calls.append({"text": text, "head_percent": head_percent, "tail_percent": tail_percent})
         if self._error is not None:
             raise self._error
         return self._result
@@ -33,7 +35,7 @@ def _result(summary: str = "Streszczenie.") -> SummarizationResult:
     """Pomocniczo: gotowy `SummarizationResult` do atrapy happy-path."""
     return SummarizationResult(
         summary  = summary,
-        metadata = SummarizationMetadata(model="fake-echo", input_chars=42, truncated=False, usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+        metadata = SummarizationMetadata(model="fake-echo", input_chars=42, truncated=False, usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15), sent_chars=42),
     )
 
 
@@ -67,10 +69,58 @@ def test_summarize_zwraca_streszczenie_i_metadane():
         "input_chars": 42,
         "truncated": False,
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        "sent_chars": 42,
+        "parts": None,
     }
 
 
+def test_metadane_parts_po_trunkacji():
+    """Serwis cial wejscie -> `parts` z trzema czesciami (percent/start/end); wylaczona czesc ma null."""
+    parts = TextParts(head=TextPart(percent=45, start=0, end=40467), middle=TextPart(percent=0), tail=TextPart(percent=55, start=65000, end=120000))
+    meta = SummarizationMetadata(model="fake-echo", input_chars=120000, truncated=True, usage=LLMUsage(), sent_chars=89998, parts=parts)
+    client = _client(_StubService(result=SummarizationResult(summary="S.", metadata=meta)))
+
+    resp = client.post("/summarize", json={"text": "Dlugie pismo", "head_percent": 45, "tail_percent": 55})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["metadata"]
+    assert body["truncated"] is True
+    assert body["sent_chars"] == 89998
+    assert body["parts"] == {
+        "head":   {"percent": 45, "start": 0, "end": 40467},
+        "middle": {"percent": 0, "start": None, "end": None},
+        "tail":   {"percent": 55, "start": 65000, "end": 120000},
+    }
+
+
+# --- Proporcje trunkacji: przekazanie do serwisu ---------------------------------
+
+
+def test_bez_proporcji_przekazuje_domyslne_45_35():
+    """Brak `head_percent`/`tail_percent` w zadaniu -> serwis dostaje domyslne 45/35."""
+    service = _StubService(result=_result())
+    _client(service).post("/summarize", json={"text": "Pismo"})
+    assert service.calls[0] == {"text": "Pismo", "head_percent": 45, "tail_percent": 35}
+
+
+def test_wlasne_proporcje_trafiaja_do_serwisu():
+    """Podane proporcje (0/100) trafiaja do serwisu bez zmian."""
+    service = _StubService(result=_result())
+    resp = _client(service).post("/summarize", json={"text": "Pismo", "head_percent": 0, "tail_percent": 100})
+    assert resp.status_code == 200, resp.text
+    assert service.calls[0]["head_percent"] == 0
+    assert service.calls[0]["tail_percent"] == 100
+
+
 # --- Walidacja wejscia -----------------------------------------------------------
+
+
+def test_suma_proporcji_ponad_100_daje_422():
+    """`head_percent + tail_percent > 100` -> 422 z walidacji pydantic; serwis nie jest wolany."""
+    service = _StubService(result=_result())
+    resp = _client(service).post("/summarize", json={"text": "Pismo", "head_percent": 60, "tail_percent": 50})
+    assert resp.status_code == 422, resp.text
+    assert service.calls == []
 
 
 def test_brak_pola_text_daje_422():

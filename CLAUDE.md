@@ -104,8 +104,24 @@ ustalić z logów bez dostępu do klienta.
     jako tura `assistant` (zmiana interfejsu `LLMClient`). Macierz siedmiu wariantów × sześć pism ×
     dwa przebiegi: komentarz przy prompcie. Strażniki: `tests/unit/test_summarization_service.py`
     (pięć pól, zero numeracji w opisie, żadnej obietnicy akapitu).
-    Truncacja wejścia do `LLM_MAX_INPUT_CHARS` (liczona w **znakach**; pierwsze N, nie chunking;
-    flaga `truncated`). Pusty tekst → `EmptyInputError`.
+    Pusty tekst → `EmptyInputError`. Truncację wejścia do `LLM_MAX_INPUT_CHARS` (w **znakach**,
+    nie chunking) robi osobna czysta jednostka:
+    - `TextTruncator` (`summarization/truncation.py`) — tekst ponad budżet → **początek / jeden
+      ciągły fragment z geometrycznego środka / koniec** w proporcjach z żądania (`head_percent`/
+      `tail_percent`, domyślnie 45/35, środek = reszta; 0 wyłącza część), ze znacznikiem
+      `[…pominięto fragment dokumentu…]` w każdym miejscu pominięcia. Powód: przy cięciu od
+      początku model nie widział zakończenia pisma (żądanie, podpis, dane nadawcy — to zasila
+      klasyfikację adresata). **Dwa świadome uproszczenia (NIE „poprawiać"):** (1) cięcie „na
+      głupio" dokładnie na offsecie, także w środku wyrazu — znacznik i tak sygnalizuje przerwę,
+      a szukanie granic akapitu/zdania to kod bez realnego zysku; (2) **stała rezerwa na dwa
+      pełne znaczniki** niezależnie od proporcji — kilkadziesiąt znaków budżetu za to, że
+      `sent_chars <= LLM_MAX_INPUT_CHARS` wynika z arytmetyki. Środek dosuwany, by nie wchodził
+      na początek/koniec; stykające się części sklejane bez znacznika.
+    - **Kontrakt:** metadane `sent_chars` + `parts` (`null` ⇔ `truncated: false`; zakresy w
+      znakach Unicode, `[start, end)`, względem `text` po stronie klienta — serwis przesuwa je o
+      wiodące białe znaki zdjęte przez `strip`). Przycinamy **tylko** wejście modelu: `text`
+      w `/extract-and-summarize` zostaje pełny (DOKUS zapisuje go do wyszukiwarki). Walidacja
+      proporcji (422) we wspólnej bazie `TruncationParams` modeli żądań.
   - `PipelineService` — orkiestrator `extract` → `summarize`; **bez własnego I/O**; odpowiedź
     z zagnieżdżonymi metadanymi obu etapów.
 - **DI (kontrast):** `ExtractionService` dostaje `TikaClient` **inline** (jeden silnik);
@@ -217,22 +233,82 @@ Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
 
 Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
 
-1. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
+1. **Limit stron PDF tnie PRZED decyzją o OCR — koniec długiego PDF-a i pełny `text` giną.**
+   `PdfPageLimiter` bierze pierwsze `MAX_OCR_PAGES` stron, zanim plik trafi do Tiki (strategia (B)
+   „limit PRZED auto"), a o OCR decyduje dopiero Tika wewnątrz żądania (`ocrStrategy=auto`, per
+   strona; nasz PUA-fallback jeszcze później). Limit pomyślany jako ochrona przed kosztem OCR tnie
+   więc **każdy** długi PDF — także czysto tekstowy, którego pełna ekstrakcja (PDFBox) jest tania.
+   Skutki dla PDF > `MAX_OCR_PAGES` (DOCX/e-maili nie dotyczy — nie mają limitu stron):
+   - **koniec pisma nie dociera do LLM** (żądanie, podpis, dane nadawcy — to, co zasila klasyfikację
+     adresata): cięcie pod okno modelu, niezależnie od strategii (od początku czy
+     początek/środek/koniec), działa na tekście już uciętym stronami — jego „koniec" to koniec
+     strony 30, nie dokumentu;
+   - **`text` w `/extract-and-summarize` nie jest pełny**, a DOKUS zapisuje go do wyszukiwarki
+     pełnotekstowej. Jedyny sygnał: `extraction.ocr_truncated` + `pages_processed`/`pages_total`.
+
+   Przy domyślnych limitach (30 stron ≈ 90 000 znaków = `LLM_MAX_INPUT_CHARS`) dla PDF-ów zwykle
+   zadziała limit stron, nie znaków. Warianty (**kierunek, NIE zamknięta decyzja** — zmienia
+   kontrakt z DOKUS):
+   - **najpierw `no_ocr` na całym pliku** (najmocniejszy kandydat): dobra warstwa tekstowa → pełny
+     tekst bez limitu stron; pusta albo PUA → cięcie do `MAX_OCR_PAGES` + OCR jak dziś. Koszt: +1
+     szybkie wywołanie dla skanów. Otwarte: PDF mieszane (część stron to skany) — `no_ocr` zwróci
+     tylko część treści, potrzebne kryterium „warstwa dobra" (np. znaki/stronę). Skany > limit
+     nadal cięte;
+   - **cięcie stron na początek + koniec** (`pypdf` wybiera dowolne strony): koniec pisma wraca, ale
+     `text` ma lukę (znacznik trafia do wyszukiwarki) i potrzebne metadane „które strony";
+   - **wyższe `MAX_OCR_PAGES`**: tylko przesuwa próg, wydłuża OCR, ryzyko timeoutu Tiki.
+
+   Pełny tekst długich **skanów** pod wyszukiwarkę wymaga przetworzenia wszystkich stron → kolejka
+   (pkt 7).
+2. **Niespójny kształt błędów — ten sam `422` raz z `detail`-tekstem, raz z `detail`-tablicą.**
+   Nasze `HTTPException` oddają `detail` jako **tekst**; walidacja żądania (domyślny handler FastAPI,
+   do którego deleguje `log_validation_error`) oddaje **listę** błędów pydantic. Dla 413/5xx kształt
+   jest stały, ale **422 ma oba**: tablica przy walidacji (brak pola, zły typ, proporcje trunkacji),
+   tekst z domeny (złe base64, pusty plik, Tika odrzuciła plik, puste wejście). Skutki:
+   - kod statusu nie wyznacza kształtu — konsument musi sprawdzać typ. Klient PHP robi to od
+     2026-09-14 (`ApiException::formatValidationErrors` skleja listę w `loc: msg; …`), wcześniej
+     `detail` przy walidacji był `null`, a przyczyna tylko w surowym ciele;
+   - **OpenAPI mija się z odpowiedziami**: schemat 422 to `HTTPValidationError` (`detail: array`),
+     a 422 z domeny zwraca string — klient generowany z OpenAPI wywróci się przy deserializacji.
+
+   Kierunek (**decyzja do podjęcia**): handler walidacji zwraca `{"detail": "<loc: msg; …>",
+   "errors": [...]}` — `detail` zawsze tekstem, struktura w `errors` (duch RFC 9457) — plus poprawiony
+   schemat 422 w OpenAPI. Koszt: kształt 422 walidacji zmienia się niewstecznie zgodnie i to
+   **świadome złamanie** zasady „handlery nie zmieniają odpowiedzi" (sekcja `fastapi` wyżej). Tanio,
+   póki konsument jest jeden, a jego klient PHP obsługuje już oba kształty. Pełne RFC 9457
+   (`application/problem+json` dla wszystkich błędów) rozważone — większe niż potrzeba.
+3. **Cicha częściowa ekstrakcja — Tika zwraca `200` z urwanym tekstem.** Gdy parser wywróci się
+   w środku pliku, Tika oddaje treść sprzed miejsca awarii, a błąd zapisuje **wyłącznie w metadanych**
+   (`X-TIKA:EXCEPTION:container_exception`). `TikaClient`/`ExtractionService` kluczy
+   `X-TIKA:EXCEPTION:*` **nie czytają** → niepełny tekst idzie do LLM bez flagi i bez logu, a
+   streszczenie brzmi pewnie. Łamie to zasadę „cięcie nie ciche" (jak `ocr_truncated`). Kierunek:
+   WARNING w logu + flaga w metadanych ekstrakcji (częściowy tekst wciąż użyteczny → nie błąd HTTP).
+
+   Zmierzone (2026-09-14) na `samples/summarization/03_faktura_vat.docx`: generator pism wpisał do
+   pogrubienia funkcję JS zamiast wartości (52× `<w:b w:val="function bold() { [native code] }"/>`) →
+   Apache POI pada na tabeli, tekst urywa się tuż przed nią (brak pozycji, sumy 9 094,62 zł, kwoty
+   słownie, uwag i podpisu). Wadliwy tylko ten plik (jedyny z tabelą) — **do naprawy**. **Skutek dla
+   ewaluacji (pkt 8):** przykład „wartość faktury ginie" to najpewniej artefakt ekstrakcji, nie wada
+   modelu — przez pipeline model tej kwoty w ogóle nie dostaje (cena oferty i wynagrodzenie
+   z zaświadczenia pozostają ważne).
+4. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
    dla pism urzędowych twardy warunek wdrożenia. Do zrobienia przed resztą.
-2. **Audyt plumbingu configu — częściowo zrobione.** Spójności `.env.example` ↔ compose
+5. **Audyt plumbingu configu — częściowo zrobione.** Spójności `.env.example` ↔ compose
    `environment` ↔ `Settings` pilnuje `tests/unit/test_config_plumbing.py` (cztery niezmienniki,
    parsuje pliki jako dane — bez Dockera). Złapał już dwa realne rozjazdy: `LLM_API_VERSION`
    wstrzykiwany w próżnię (usunięty) i `OLLAMA_PORT` poza szablonem. **Zostaje**: weryfikacja, że
    pokrętło realnie *działa* w runtime (test sprawdza przepływ nazw, nie zachowanie) — np.
    nieprzekazany kiedyś `LLM_TIMEOUT_SECONDS` dziś zostałby złapany, ale zły typ/jednostka nie.
-3. **Truncacja długich pism = ryzyko jakości.** Ucinanie od początku (`LLM_MAX_INPUT_CHARS`) może
-   pominąć kluczowe końcówki (termin, podpis, rygor) → mylące streszczenie. Decyzja: chunking/
-   map-reduce vs świadomy limit; dziś jest tylko flaga `truncated` (mówi „że", nie ratuje treści).
+6. **Truncacja długich pism = ryzyko jakości — częściowo zrobione.** Końcówka pisma (termin,
+   podpis, rygor) już dociera do modelu: cięcie początek / środek / koniec (`TextTruncator`) zamiast
+   samego początku. **Zostaje:** środek dokumentu poza jednym fragmentem wciąż ginie (decyzja
+   chunking/map-reduce vs świadomy limit nadal otwarta), a dla PDF-ów ponad `MAX_OCR_PAGES`
+   cięcie działa na tekście już uciętym stronami (pkt 1).
    **Rozjazd bramek jest realny:** `MAX_OCR_PAGES=30` przepuszcza ~90 000 znaków ≈ 33 000 tokenów
    — nie mieści się w ŻADNYM oknie Bielika 11B (max 32 768, a i to z przelewem VRAM).
-4. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
+7. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
    rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
-5. **Ewaluacja jakości streszczeń — pierwszy pomiar JEST, automatu (harnessu) wciąż brak.** To serce
+8. **Ewaluacja jakości streszczeń — pierwszy pomiar JEST, automatu (harnessu) wciąż brak.** To serce
    produktu; mierzyć, nie „na oko". Powstał **golden set 20 syntetycznych pism** w
    `samples/summarization/` (`01_…`–`20_….docx`) — syntetyczne, więc świadomie **poza `.gitignore`**,
    trzymane w repo (stary `samples/*`-ignore i README świadomie skasowane — `samples/` **nie jest już
@@ -276,7 +352,7 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    w Ollamie — powtórzenia w jednej sesji próbkują ten sam bufor prefiksu, więc mierzą zero, a ta
    sama komórka potrafi dać `3/3` i `0/3` w dwóch przebiegach. Stąd wymóg: **dwa niezależne
    przebiegi** i **zawsze czytać surowe odpowiedzi**, nie tylko licznik.
-6. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
+9. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
    źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
 
 ## Świadomie pominięte (NIE dodawać bez pytania)

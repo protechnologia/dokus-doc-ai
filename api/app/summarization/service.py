@@ -12,14 +12,16 @@ otwierajacy byl w pierwotnym zamysle, ale model go nie oddaje bez protez — pat
 pomiarow przy `_SYSTEM_PROMPT`.
 
 Truncacja (truncacja POD OKNO MODELU — co innego niz limit stron ekstrakcji z 2.3.5):
-prosta, w znakach (`max_input_chars`), bierzemy POCZATEK tekstu (nie chunking) + log +
-metadana `truncated`. Prog konfigurowalny (docelowo z `Settings.llm_max_input_chars`),
-spojny z `MAX_OCR_PAGES`/`MAX_UPLOAD_BYTES` (patrz README -> "Spojnosc limitow pipeline'u").
+w znakach (`max_input_chars`), POCZATEK / SRODEK / KONIEC w proporcjach z zadania, ze
+znacznikami pominiecia (`TextTruncator`, osobny czysty modul `truncation.py`) + log + metadane
+`truncated`/`sent_chars`/`parts`. Nie chunking. Prog konfigurowalny (z
+`Settings.llm_max_input_chars`), spojny z `MAX_OCR_PAGES`/`MAX_UPLOAD_BYTES` (patrz README ->
+"Spojnosc limitow pipeline'u").
 
-Struktura (jak w `ExtractionService`): czyste fragmenty bez I/O (truncacja, budowa
-wiadomosci, metadane) w osobnych helperach; w async `summarize` zostaje samo wywolanie
-`LLMClient` + zlozenie wyniku. Wyjatki LLM (`LLMError`...) NIE sa tu lapane — propaguja do
-endpointu, ktory mapuje je na HTTP (krok 2.4.2).
+Struktura (jak w `ExtractionService`): czyste fragmenty bez I/O (truncacja w `TextTruncator`,
+budowa wiadomosci, metadane) osobno; w async `summarize` zostaje samo wywolanie `LLMClient` +
+zlozenie wyniku. Wyjatki LLM (`LLMError`...) NIE sa tu lapane — propaguja do endpointu, ktory
+mapuje je na HTTP (krok 2.4.2).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from app.llm import LLMClient, LLMResult, LLMUsage
+from app.summarization.truncation import DEFAULT_HEAD_PERCENT, DEFAULT_TAIL_PERCENT, TextPart, TextParts, TextTruncator, TruncationResult
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +83,14 @@ _USER_TEMPLATE = "Streść poniższy dokument:\n\n{text}"
 
 
 class SummarizationMetadata(BaseModel):
-    """Metadane streszczenia — diagnostyka (jaki model, koszt) i sygnał truncacji."""
+    """Metadane streszczenia — diagnostyka (jaki model, koszt) i opis tego, co realnie trafiło do modelu."""
 
-    model: str        = Field(description="Identyfikator modelu, który faktycznie odpowiedział, np. 'gpt-4o-mini' lub 'fake-echo'.")
-    input_chars: int  = Field(description="Długość tekstu wejściowego (po strip), w znakach — PRZED ewentualną truncacją.")
-    truncated: bool   = Field(default=False, description="Czy wejście ucięto do `max_input_chars` (streszczenie z części dokumentu).")
-    usage: LLMUsage   = Field(default_factory=LLMUsage, description="Zużycie tokenów (prompt/completion/total) — diagnostyka kosztu.")
+    model: str               = Field(description="Identyfikator modelu, który faktycznie odpowiedział, np. 'gpt-4o-mini' lub 'fake-echo'.")
+    input_chars: int         = Field(description="Długość tekstu wejściowego (po strip), w znakach — PRZED ewentualną truncacją.")
+    truncated: bool          = Field(default=False, description="Czy wejście ucięto do `max_input_chars` (streszczenie z części dokumentu).")
+    usage: LLMUsage          = Field(default_factory=LLMUsage, description="Zużycie tokenów (prompt/completion/total) — diagnostyka kosztu.")
+    sent_chars: int          = Field(description="Długość tekstu wysłanego do modelu (po truncacji, ze znacznikami pominięcia), w znakach.")
+    parts: TextParts | None  = Field(default=None, description="Proporcje i zakresy części (początek/środek/koniec) względem tekstu wejściowego; None, gdy nie cięto.")
 
 
 class SummarizationResult(BaseModel):
@@ -116,26 +121,29 @@ class SummarizationService:
 
     Do czego:
         Zamienia surowy tekst dokumentu na `SummarizationResult` (streszczenie + metadane):
-        składa prompt (system + szablon usera), pilnuje truncacji wejścia pod okno modelu,
-        woła `LLMClient.complete`. Nie wie i nie ma wiedzieć, który dostawca odpowiada —
-        dostaje go wstrzykniętego z fabryki (`get_llm_client()`), bo LLM jest wymienialny.
+        składa prompt (system + szablon usera), pilnuje truncacji wejścia pod okno modelu
+        (początek / środek / koniec przez `TextTruncator`), woła `LLMClient.complete`. Nie wie
+        i nie ma wiedzieć, który dostawca odpowiada — dostaje go wstrzykniętego z fabryki
+        (`get_llm_client()`), bo LLM jest wymienialny.
 
     Flow jednego `summarize(...)`:
         1. strip + pusto -> `EmptyInputError`,
-        2. `_truncate` -> tekst pod limit + flaga `truncated`,
+        2. `TextTruncator.apply` -> tekst pod limit + zakresy części (log, gdy cięto),
         3. `LLMClient.complete` (system + user) -> `LLMResult` (jedyne I/O; błędy LLM propagują),
-        4. `_build_metadata` -> `SummarizationResult`.
+        4. `_leading_whitespace_len` + `_build_metadata` -> `SummarizationResult` (offsety
+           przesunięte na tekst klienta przez `_shift_parts`).
     """
 
     def __init__(
         self,
         client: LLMClient,             # transport/generacja LLM (z fabryki); w testach `FakeLLMClient`
         *,
-        max_input_chars: int = 90_000,   # limit znaków wejścia pod okno modelu (docelowo z `Settings`)
+        max_input_chars: int = 90_000,   # limit znaków wejścia pod okno modelu (z `Settings.llm_max_input_chars`)
         max_output_tokens: int = 600,    # górny limit długości streszczenia (zwięzłe -> krótkie)
     ) -> None:
         """Opis metody:
-        Zbuduj serwis nad wstrzykniętym klientem LLM (sama konfiguracja, bez I/O).
+        Zbuduj serwis nad wstrzykniętym klientem LLM (sama konfiguracja, bez I/O). Trunkator
+        buduje sam z limitu znaków (analogia do `ExtractionService`, który buduje `PdfPageLimiter`).
 
         Przyklad argumentow:
             client=FakeLLMClient()
@@ -143,36 +151,58 @@ class SummarizationService:
 
         Przyklad wyniku:
             gotowy SummarizationService
+
+        Raises:
+            ValueError: `max_input_chars` za mały na rezerwę znaczników (z `TextTruncator`).
         """
         self._client            = client
-        self._max_input_chars   = max_input_chars
+        self._truncator         = TextTruncator(max_chars=max_input_chars)
         self._max_output_tokens = max_output_tokens
 
     # --- Czyste helpery (bez I/O) — testowalne jednostkowo bez LLM -------------------
 
-    def _truncate(
-        self,
-        text: str,   # tekst wejściowy PO strip
-    ) -> tuple[str, bool]:
+    @staticmethod
+    def _leading_whitespace_len(
+        text: str,   # surowy tekst od klienta (PRZED strip), np. "  \nPismo..."
+    ) -> int:
         """Opis metody:
-        Przytnij tekst do `max_input_chars` znaków (bierzemy POCZĄTEK — nie chunking). Zwraca
-        (tekst, czy_ucięto). Truncacja NIE jest cicha: gdy tniemy, logujemy ostrzeżenie.
+        Policz wiodące białe znaki zdjęte przez `strip` — o tyle trzeba przesunąć offsety części,
+        by wskazywały pozycje w tekście, który klient ma w ręku (a nie w tekście po strip).
+        Czysta funkcja.
 
         Przyklad argumentow:
-            text="...120 000 znaków..."   # przy max_input_chars=90000
+            text="  \\nPismo w sprawie podatku"
 
         Przyklad wyniku:
-            ("...pierwsze 90 000 znaków...", True)
+            3
         """
-        # Mieści się w limicie -> bez zmian.
-        if len(text) <= self._max_input_chars:
-            return text, False
-        # Za długie -> tniemy POCZĄTEK; log (nie cicho), by było wiadomo, że streszczenie z części.
-        logger.warning(
-            "Tekst %d znaków > limit %d; tnę do pierwszych %d (streszczenie z części dokumentu).",
-            len(text), self._max_input_chars, self._max_input_chars,
+        return len(text) - len(text.lstrip())
+
+    @staticmethod
+    def _shift_parts(
+        parts: TextParts | None,   # zakresy części względem tekstu po strip; None = nie cięto
+        offset: int,               # przesunięcie (wiodące białe znaki), np. 3
+    ) -> TextParts | None:
+        """Opis metody:
+        Przesuń zakresy części o `offset` (proporcje bez zmian; części wyłączone zostają bez
+        zakresu). Brak cięcia (None) przechodzi bez zmian. Czysta funkcja.
+
+        Przyklad argumentow:
+            parts=TextParts(head=TextPart(percent=45, start=0, end=40), ...), offset=3
+
+        Przyklad wyniku:
+            TextParts(head=TextPart(percent=45, start=3, end=43), ...)
+        """
+        # Nie cięto -> nie ma czego przesuwać.
+        if parts is None:
+            return None
+
+        # Część wyłączona (bez zakresu) zostaje jak jest; włączona -> oba końce + offset.
+        head, middle, tail = (
+            p if p.start is None else TextPart(percent=p.percent, start=p.start + offset, end=p.end + offset)
+            for p in (parts.head, parts.middle, parts.tail)
         )
-        return text[: self._max_input_chars], True
+        return TextParts(head=head, middle=middle, tail=tail)
 
     @staticmethod
     def _build_user_message(
@@ -190,28 +220,33 @@ class SummarizationService:
         """
         return _USER_TEMPLATE.format(text=text)
 
-    @staticmethod
+    @classmethod
     def _build_metadata(
-        input_chars: int,    # długość wejścia (po strip) PRZED truncacją
-        truncated: bool,     # czy wejście ucięto
-        result: LLMResult,   # wynik z `complete` (źródło model + usage)
+        cls,
+        input_chars: int,        # długość wejścia (po strip) PRZED truncacją, np. 120000
+        cut: TruncationResult,   # wynik `TextTruncator.apply` (tekst dla modelu + zakresy części)
+        offset: int,             # wiodące białe znaki zdjęte przez strip (przesunięcie zakresów), np. 0
+        result: LLMResult,       # wynik z `complete` (źródło model + usage)
     ) -> SummarizationMetadata:
         """Opis metody:
-        Złóż metadane wyniku z długości wejścia, flagi truncacji i danych z `LLMResult`.
-        Czysta funkcja.
+        Złóż metadane wyniku z długości wejścia, wyniku truncacji (flaga, długość wysłana, zakresy
+        przesunięte na tekst klienta) i danych z `LLMResult`. Czysta funkcja.
 
         Przyklad argumentow:
-            input_chars=1280, truncated=False
+            input_chars=1280, cut=TruncationResult(text="...", truncated=False, parts=None), offset=0
             result=LLMResult(text="...", model="gpt-4o-mini", usage=LLMUsage(total_tokens=420))
 
         Przyklad wyniku:
-            SummarizationMetadata(model="gpt-4o-mini", input_chars=1280, truncated=False, usage=...)
+            SummarizationMetadata(model="gpt-4o-mini", input_chars=1280, truncated=False, usage=...,
+                                  sent_chars=1280, parts=None)
         """
         return SummarizationMetadata(
             model       = result.model,
             input_chars = input_chars,
-            truncated   = truncated,
+            truncated   = cut.truncated,
             usage       = result.usage,
+            sent_chars  = len(cut.text),
+            parts       = cls._shift_parts(cut.parts, offset),
         )
 
     # --- Wywolanie (I/O przez LLMClient) — orkiestracja ----------------------------
@@ -219,21 +254,27 @@ class SummarizationService:
     async def summarize(
         self,
         *,
-        text: str,   # surowy tekst dokumentu do streszczenia
+        text: str,                                 # surowy tekst dokumentu do streszczenia
+        head_percent: int = DEFAULT_HEAD_PERCENT,  # proporcja budżetu na początek 0–100, np. 45
+        tail_percent: int = DEFAULT_TAIL_PERCENT,  # proporcja budżetu na koniec 0–100, np. 35
     ) -> SummarizationResult:
         """Opis metody:
-        Streść tekst: walidacja pustego, truncacja pod okno modelu, wołanie LLM, złożenie wyniku.
+        Streść tekst: walidacja pustego, truncacja pod okno modelu (początek / środek / koniec),
+        wołanie LLM, złożenie wyniku.
 
         Przyklad argumentow:
             text="Pismo z Urzędu Skarbowego w sprawie zaległości..."
+            head_percent=45, tail_percent=35
 
         Przyklad wyniku:
-            SummarizationResult(summary="Urząd Skarbowy wzywa do zapłaty...\\n\\n• Typ: ...",
+            SummarizationResult(summary="• Typ pisma: wezwanie...",
                                 metadata=SummarizationMetadata(model="gpt-4o-mini", input_chars=812,
-                                                               truncated=False, usage=...))
+                                                               truncated=False, usage=...,
+                                                               sent_chars=812, parts=None))
 
         Raises:
             EmptyInputError:    wejście puste (sam whitespace).
+            ValueError:         niespójne proporcje (spoza 0–100 albo suma > 100) — API waliduje wcześniej.
             LLMError:           dowolny błąd warstwy LLM (auth/limit/timeout/odpowiedź) — propaguje.
         """
         # Pusto po strip = nie ma czego streszczać -> błąd domenowy (endpoint -> 422).
@@ -241,17 +282,24 @@ class SummarizationService:
         if not normalized:
             raise EmptyInputError("Puste wejście — brak tekstu do streszczenia.")
 
-        # Truncacja pod okno modelu (testowana osobno); flaga ląduje w metadanych.
-        body, truncated = self._truncate(normalized)
+        # Truncacja pod okno modelu (czysty `TextTruncator`, testowany osobno).
+        cut = self._truncator.apply(normalized, head_percent=head_percent, tail_percent=tail_percent)
+        if cut.truncated:
+            # Nie cicho: log, by było wiadomo, że streszczenie powstało z części dokumentu.
+            logger.warning(
+                "Tekst %d znaków > limit %d; tnę początek/środek/koniec %d/%d/%d%% -> %d znaków do modelu (streszczenie z części dokumentu).",
+                len(normalized), self._truncator.max_chars,
+                cut.parts.head.percent, cut.parts.middle.percent, cut.parts.tail.percent, len(cut.text),
+            )
 
         # Jedyne I/O: generacja przez wstrzyknięty klient. Błędy LLM propagują do endpointu.
         result = await self._client.complete(
-            user        = self._build_user_message(body),
+            user        = self._build_user_message(cut.text),
             system      = _SYSTEM_PROMPT,
             max_tokens  = self._max_output_tokens,
             temperature = 0.0,   # streszczenia stabilne/powtarzalne
         )
 
-        # Metadane liczone na DŁUGOŚCI ORYGINAŁU (po strip), nie po przycięciu.
-        metadata = self._build_metadata(len(normalized), truncated, result)
+        # Metadane: długość ORYGINAŁU (po strip); zakresy przesunięte na tekst, który ma klient.
+        metadata = self._build_metadata(len(normalized), cut, self._leading_whitespace_len(text), result)
         return SummarizationResult(summary=result.text.strip(), metadata=metadata)

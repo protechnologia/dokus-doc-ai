@@ -18,17 +18,19 @@ from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeou
 from app.main import app
 from app.pipeline import PipelineResult
 from app.routers.pipeline import _get_pipeline_service
-from app.summarization import EmptyInputError, SummarizationMetadata
+from app.summarization import EmptyInputError, SummarizationMetadata, TextPart, TextParts
 
 
 class _StubService:
-    """Atrapa `PipelineService`: oddaje zadany wynik albo rzuca zadany wyjatek (duck-typing)."""
+    """Atrapa `PipelineService`: oddaje zadany wynik albo rzuca zadany wyjatek; nagrywa proporcje (duck-typing)."""
 
     def __init__(self, *, result: PipelineResult | None = None, error: Exception | None = None) -> None:
+        self.calls: list[dict] = []
         self._result = result
         self._error = error
 
-    async def process(self, *, data, content_type=None, filename=None) -> PipelineResult:
+    async def process(self, *, data, content_type=None, filename=None, head_percent, tail_percent) -> PipelineResult:
+        self.calls.append({"head_percent": head_percent, "tail_percent": tail_percent})
         if self._error is not None:
             raise self._error
         return self._result
@@ -40,7 +42,7 @@ def _result(summary: str = "Streszczenie.", text: str = "Pelna tresc.") -> Pipel
         summary       = summary,
         text          = text,
         extraction    = ExtractionMetadata(content_type="application/pdf", language="pl", char_count=len(text), word_count=2, ocr_used=True, pages_total=3, pages_processed=3, ocr_truncated=False),
-        summarization = SummarizationMetadata(model="fake-echo", input_chars=len(text), truncated=False, usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15)),
+        summarization = SummarizationMetadata(model="fake-echo", input_chars=len(text), truncated=False, usage=LLMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15), sent_chars=len(text)),
     )
 
 
@@ -80,6 +82,51 @@ def test_zwraca_streszczenie_tekst_i_metadane_obu_etapow():
     assert body["extraction"]["ocr_used"] is True
     assert body["summarization"]["model"] == "fake-echo"
     assert body["summarization"]["usage"]["total_tokens"] == 15
+    assert body["summarization"]["sent_chars"] == len("Pelna tresc pisma.")
+    assert body["summarization"]["parts"] is None                 # tekst w budzecie -> bez ciecia
+
+
+def test_trunkacja_text_pelny_i_parts_w_summarization():
+    """Wejscie modelu ciete -> `text` nadal pelny, a `summarization.parts` niesie zakresy wzgledem `text`."""
+    full_text = "Pelna tresc pisma. " * 10
+    parts = TextParts(head=TextPart(percent=45, start=0, end=20), middle=TextPart(percent=20, start=90, end=100), tail=TextPart(percent=35, start=175, end=190))
+    result = _result("Urzad wzywa.", full_text)
+    result.summarization = SummarizationMetadata(model="fake-echo", input_chars=len(full_text), truncated=True, usage=LLMUsage(), sent_chars=102, parts=parts)
+    client = _client(_StubService(result=result))
+
+    resp = client.post("/extract-and-summarize", json={"content_base64": _b64()})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["text"] == full_text                               # pelny tekst pod wyszukiwarke
+    assert body["summarization"]["truncated"] is True
+    assert body["summarization"]["parts"]["middle"] == {"percent": 20, "start": 90, "end": 100}
+
+
+# --- Proporcje trunkacji: przekazanie do serwisu ---------------------------------
+
+
+def test_bez_proporcji_przekazuje_domyslne_45_35():
+    """Brak `head_percent`/`tail_percent` w zadaniu -> pipeline dostaje domyslne 45/35."""
+    service = _StubService(result=_result())
+    _client(service).post("/extract-and-summarize", json={"content_base64": _b64()})
+    assert service.calls[0] == {"head_percent": 45, "tail_percent": 35}
+
+
+def test_wlasne_proporcje_trafiaja_do_serwisu():
+    """Podane proporcje (45/55) trafiaja do pipeline'u bez zmian."""
+    service = _StubService(result=_result())
+    resp = _client(service).post("/extract-and-summarize", json={"content_base64": _b64(), "head_percent": 45, "tail_percent": 55})
+    assert resp.status_code == 200, resp.text
+    assert service.calls[0] == {"head_percent": 45, "tail_percent": 55}
+
+
+def test_suma_proporcji_ponad_100_daje_422():
+    """`head_percent + tail_percent > 100` -> 422 z walidacji pydantic; serwis nie jest wolany."""
+    service = _StubService(result=_result())
+    resp = _client(service).post("/extract-and-summarize", json={"content_base64": _b64(), "head_percent": 80, "tail_percent": 30})
+    assert resp.status_code == 422, resp.text
+    assert service.calls == []
 
 
 # --- Walidacja wejscia (wspolna z /extract) --------------------------------------

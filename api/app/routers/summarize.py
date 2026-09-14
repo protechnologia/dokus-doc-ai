@@ -63,24 +63,32 @@ async def summarize(
     """Streszcz przeslany tekst i zwroc streszczenie wraz z metadanymi.
 
     Wola `SummarizationService` -> mapuje wyjatki domenowe/LLM na kody HTTP. Decyzje o
-    promptach i truncacji sa po stronie domeny.
+    promptach i truncacji sa po stronie domeny. Opcjonalne `head_percent`/`tail_percent`
+    (domyslnie 45/35) steruja podzialem budzetu, gdy tekst przekracza `LLM_MAX_INPUT_CHARS`.
 
     Przyklad wejscia:
-        {"text": "Pismo z Urzedu Skarbowego w sprawie zaleglosci podatkowej..."}
+        {"text": "Pismo z Urzedu Skarbowego w sprawie zaleglosci podatkowej...",
+         "head_percent": 45, "tail_percent": 35}
 
-    Przyklad odpowiedzi:
+    Przyklad odpowiedzi (tekst ucięty; bez ciecia `parts` = null, `sent_chars` = `input_chars`):
         {
-            "summary": "Urzad Skarbowy wzywa do zaplaty...\\n\\n• Typ: wezwanie...",
+            "summary": "• Typ pisma: wezwanie do zaplaty\\n• Nadawca: Urzad Skarbowy...",
             "metadata": {
                 "model": "gpt-4o-mini",
-                "input_chars": 812,
-                "truncated": false,
-                "usage": {"prompt_tokens": 250, "completion_tokens": 90, "total_tokens": 340}
+                "input_chars": 120000,
+                "truncated": true,
+                "usage": {"prompt_tokens": 30250, "completion_tokens": 90, "total_tokens": 30340},
+                "sent_chars": 89998,
+                "parts": {
+                    "head":   {"percent": 45, "start": 0,     "end": 40467},
+                    "middle": {"percent": 20, "start": 51007, "end": 68992},
+                    "tail":   {"percent": 35, "start": 88526, "end": 120000}
+                }
             }
         }
 
     Kody bledow:
-        422 — puste wejscie (sam whitespace).
+        422 — puste wejscie (sam whitespace) / proporcje spoza 0–100, null albo suma powyzej 100.
         500 — bledna konfiguracja dostawcy LLM / zly klucz (nasz config).
         502 — inny blad po stronie dostawcy / nieoczekiwana odpowiedz.
         503 — dostawca dlawi (limit zapytan/kwota).
@@ -88,7 +96,11 @@ async def summarize(
     """
     # Domena: streszczenie przez serwis; wyjatki domenowe/LLM -> kody HTTP.
     try:
-        result = await service.summarize(text=request.text)
+        result = await service.summarize(
+            text         = request.text,
+            head_percent = request.head_percent,
+            tail_percent = request.tail_percent,
+        )
     # Puste wejscie — wina lezy po stronie klienta (nic do streszczenia).
     except EmptyInputError as exc:
         raise HTTPException(

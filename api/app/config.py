@@ -55,9 +55,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0    # timeout wolania LLM [s]
 
     # --- Summaryzacja (domena: app.summarization, krok 2.4) ---
-    # Strażnik okna kontekstu modelu: górny limit ZNAKÓW tekstu wysyłanego do LLM. Powyżej —
-    # bierzemy pierwsze N znaków + log + metadana `truncated` (truncacja POD OKNO MODELU, co
-    # innego niż MAX_OCR_PAGES z ekstrakcji). Liczony w znakach (odporny na zmianę modelu/
+    # Strażnik okna kontekstu modelu: górny limit ZNAKÓW tekstu wysyłanego do LLM (razem ze
+    # znacznikami pominięcia). Powyżej — początek / środek / koniec w proporcjach z żądania
+    # (`TextTruncator`) + log + metadane `truncated`/`sent_chars`/`parts` (truncacja POD OKNO
+    # MODELU, co innego niż MAX_OCR_PAGES z ekstrakcji). Liczony w znakach (odporny na zmianę modelu/
     # tokenizera). Domyślnie 90 000 — spójnie z MAX_OCR_PAGES=30 (~3000 znaków/stronę); pod
     # mniejszy model (Bielik, ~32k tok.) obniżyć (patrz README → „Spójność limitów pipeline'u").
     llm_max_input_chars: int = 90_000

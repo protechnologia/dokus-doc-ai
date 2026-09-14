@@ -142,24 +142,29 @@ async def extract_and_summarize(
 
     Dekoduje base64 -> waliduje rozmiar -> wola `PipelineService.process` (extract ->
     summarize) -> mapuje wyjatki OBU warstw na kody HTTP (unia /extract + /summarize).
+    Opcjonalne `head_percent`/`tail_percent` (domyslnie 45/35) tna TYLKO wejscie modelu —
+    `text` w odpowiedzi zostaje pelny.
 
     Przyklad wejscia:
-        {"content_base64": "JVBERi0xLjcK...", "content_type": "application/pdf"}
+        {"content_base64": "JVBERi0xLjcK...", "content_type": "application/pdf",
+         "head_percent": 45, "tail_percent": 35}
 
-    Przyklad odpowiedzi:
+    Przyklad odpowiedzi (tekst zmiescil sie w budzecie -> `parts` = null):
         {
-            "summary": "Urzad Skarbowy wzywa do zaplaty...\\n\\n• Typ: wezwanie...",
+            "summary": "• Typ pisma: wezwanie do zaplaty\\n• Nadawca: Urzad Skarbowy...",
             "text": "Pelna tresc dokumentu...",
             "extraction": {"content_type": "application/pdf", "language": "pl",
                            "char_count": 4200, "word_count": 600, "ocr_used": true,
                            "pages_total": 3, "pages_processed": 3, "ocr_truncated": false},
             "summarization": {"model": "gpt-4o-mini", "input_chars": 4200, "truncated": false,
-                              "usage": {"prompt_tokens": 1200, "completion_tokens": 90, "total_tokens": 1290}}
+                              "usage": {"prompt_tokens": 1200, "completion_tokens": 90, "total_tokens": 1290},
+                              "sent_chars": 4200, "parts": null}
         }
 
     Kody bledow:
         413 — plik wiekszy niz MAX_UPLOAD_BYTES.
-        422 — zly base64 / pusty plik / Tika odrzucila plik / brak tresci po ekstrakcji / puste wejscie LLM.
+        422 — zly base64 / pusty plik / Tika odrzucila plik / brak tresci po ekstrakcji / puste wejscie LLM /
+              proporcje spoza 0–100, null albo suma powyzej 100.
         500 — bledna konfiguracja dostawcy LLM / zly klucz (nasz config).
         502 — tika-server nieosiagalny / inny blad po stronie dostawcy LLM.
         503 — dostawca LLM dlawi (limit zapytan/kwota).
@@ -174,9 +179,11 @@ async def extract_and_summarize(
     # 3. Domena: pelny pipeline; wyjatki OBU warstw -> kody HTTP (unia mapowan).
     try:
         result = await service.process(
-            data=data,
-            content_type=request.content_type,
-            filename=request.filename,
+            data         = data,
+            content_type = request.content_type,
+            filename     = request.filename,
+            head_percent = request.head_percent,
+            tail_percent = request.tail_percent,
         )
     # --- Warstwa ekstrakcji -----------------------------------------------------
     except TikaUnavailableError as exc:

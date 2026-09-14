@@ -31,9 +31,11 @@ Pełny przebieg (endpoint `POST /extract-and-summarize`) krok po kroku:
 5. **OCR (fallback)** — jeżeli bezpośrednia ekstrakcja nie jest możliwa lub zwraca błędne
    wyniki (np. PDF z uszkodzoną warstwą tekstową — glify w Private Use Area), uruchamiany
    jest OCR (Tesseract, `pol+eng`).
-6. **Truncacja pod model** — wyekstrahowany tekst jest obcinany do `LLM_MAX_INPUT_CHARS`
-   znaków (dopasowanie do okna kontekstu modelu; flaga `truncated` w metadanych).
-7. **Streszczenie** — obcięty tekst trafia do LLM (przez `LLMClient`) z prośbą o
+6. **Truncacja pod model** — tekst dłuższy niż `LLM_MAX_INPUT_CHARS` znaków jest skracany do
+   trzech fragmentów: początku, środka i końca dokumentu (domyślnie 45% / 20% / 35% budżetu),
+   rozdzielonych znacznikiem `[…pominięto fragment dokumentu…]`. Co trafiło do modelu, opisują
+   metadane `truncated` / `sent_chars` / `parts`.
+7. **Streszczenie** — przygotowany tekst trafia do LLM (przez `LLMClient`) z prośbą o
    wygenerowanie podsumowania pod dekretację.
 8. **Odpowiedź** — pełny tekst, podsumowanie oraz metadane obu etapów wracają do
    użytkownika w formacie JSON.
@@ -290,12 +292,20 @@ Wejście (`SummarizeRequest`):
 | Pole | Wymagane | Opis |
 |---|---|---|
 | `text` | tak | Tekst dokumentu do streszczenia. |
+| `head_percent` | nie | Proporcja budżetu `LLM_MAX_INPUT_CHARS` na **początek** dokumentu, liczba całkowita 0–100. Domyślnie `45`. |
+| `tail_percent` | nie | Proporcja budżetu na **koniec** dokumentu, liczba całkowita 0–100. Domyślnie `35`. Środek dostaje resztę: `100 − head_percent − tail_percent`. |
+
+Proporcje działają tylko wtedy, gdy tekst jest dłuższy niż `LLM_MAX_INPUT_CHARS`. Wartość `0`
+wyłącza daną część (np. `45`/`55` daje wynik bez środka). Suma powyżej `100`, wartość spoza
+zakresu albo `null` zwraca `422`; pominięcie klucza oznacza wartość domyślną.
 
 Przykładowe żądanie:
 
 ```json
 {
-  "text": "Urząd Skarbowy w Krakowie wzywa Jana Kowalskiego do zapłaty zaległości w podatku od nieruchomości za 2025 r. w kwocie 1 240 zł w terminie 14 dni od doręczenia pisma, pod rygorem egzekucji."
+  "text": "Urząd Skarbowy w Krakowie wzywa Jana Kowalskiego do zapłaty zaległości w podatku od nieruchomości za 2025 r. w kwocie 1 240 zł w terminie 14 dni od doręczenia pisma, pod rygorem egzekucji.",
+  "head_percent": 45,
+  "tail_percent": 35
 }
 ```
 
@@ -313,7 +323,30 @@ jeden tekst + metadane:
       "prompt_tokens": 250,
       "completion_tokens": 90,
       "total_tokens": 340
-    }
+    },
+    "sent_chars": 812,
+    "parts": null
+  }
+}
+```
+
+Metadane dla tekstu dłuższego niż `LLM_MAX_INPUT_CHARS` (tu 120 000 znaków przy limicie 90 000):
+
+```json
+"metadata": {
+  "model": "gpt-4o-mini",
+  "input_chars": 120000,
+  "truncated": true,
+  "usage": {
+    "prompt_tokens": 30250,
+    "completion_tokens": 90,
+    "total_tokens": 30340
+  },
+  "sent_chars": 89998,
+  "parts": {
+    "head":   {"percent": 45, "start": 0,     "end": 40467},
+    "middle": {"percent": 20, "start": 51007, "end": 68992},
+    "tail":   {"percent": 35, "start": 88526, "end": 120000}
   }
 }
 ```
@@ -326,12 +359,19 @@ Pola metadanych:
 | `input_chars` | Długość wejścia po `strip` (w znakach). |
 | `truncated` | Czy tekst ucięto do `LLM_MAX_INPUT_CHARS`. |
 | `usage` | Zużycie tokenów (`prompt_tokens` / `completion_tokens` / `total_tokens`) — diagnostyka kosztu. |
+| `sent_chars` | Długość tekstu wysłanego do modelu (po cięciu, razem ze znacznikami pominięcia). Nigdy nie przekracza `LLM_MAX_INPUT_CHARS`. |
+| `parts` | `null`, gdy tekst zmieścił się w budżecie (`truncated: false`). Po cięciu obiekt z kluczami `head` / `middle` / `tail`, każdy z polami `percent` (zastosowana proporcja), `start` i `end` (zakres zachowanego fragmentu). `start`/`end` mają wartość `null`, gdy proporcja części wynosi `0`. |
+
+Zakresy w `parts` są liczone w znakach Unicode (nie w bajtach), od `start` włącznie do `end`
+wyłącznie, względem tekstu, który klient ma u siebie: pola `text` z żądania `POST /summarize`
+albo pola `text` z odpowiedzi `POST /extract-and-summarize`. W PHP fragment wycina się przez
+`mb_substr($text, $start, $end - $start, 'UTF-8')`.
 
 Kody błędów:
 
 | Kod | Kiedy |
 |---|---|
-| `422` | Puste wejście (sam whitespace) lub brak pola `text`. |
+| `422` | Puste wejście (sam whitespace), brak pola `text` albo niepoprawne proporcje (`head_percent`/`tail_percent` spoza 0–100, `null` lub o sumie powyżej 100). |
 | `500` | Błędna konfiguracja dostawcy LLM / zły klucz (nasz config serwera). |
 | `502` | Inny błąd po stronie dostawcy / nieoczekiwana odpowiedź. |
 | `503` | Dostawca dławi (limit zapytań / kwota). |
@@ -345,9 +385,12 @@ curl -X POST http://localhost:8000/summarize \
   -d '{"text": "Urząd Skarbowy wzywa do zapłaty zaległości podatkowej w terminie 14 dni..."}'
 ```
 
-> Długie wejście jest **ucinane** do `LLM_MAX_INPUT_CHARS` znaków (truncacja pod okno modelu,
-> z metadaną `truncated`) — to co innego niż limit stron ekstrakcji (`MAX_OCR_PAGES`). Oba
-> limity warto trzymać spójnie: patrz „Limity i jakość ekstrakcji”.
+> Długie wejście jest **skracane** do `LLM_MAX_INPUT_CHARS` znaków: model dostaje początek,
+> ciągły fragment z geometrycznego środka i koniec dokumentu w podanych proporcjach. Cięcie
+> następuje dokładnie na wyliczonej pozycji, także w środku wyrazu, a każde miejsce pominięcia
+> oznacza znacznik `[…pominięto fragment dokumentu…]` (liczony do budżetu). To co innego niż
+> limit stron ekstrakcji (`MAX_OCR_PAGES`). Oba limity warto trzymać spójnie: patrz „Limity i
+> jakość ekstrakcji”.
 
 ### `POST /extract-and-summarize`
 
@@ -363,6 +406,11 @@ Wejście (`SummarizeDocumentRequest`):
 | `content_base64` | tak | Zawartość pliku zakodowana base64. |
 | `filename` | nie | Nazwa pliku (podpowiedź typu), np. `pismo.pdf`. |
 | `content_type` | nie | MIME (podpowiedź), np. `application/pdf`; brak → autodetekcja. |
+| `head_percent` | nie | Proporcja budżetu LLM na początek dokumentu, 0–100, domyślnie `45` — jak w `POST /summarize`. |
+| `tail_percent` | nie | Proporcja budżetu LLM na koniec dokumentu, 0–100, domyślnie `35` — jak w `POST /summarize`. |
+
+Proporcje przycinają **wyłącznie** wejście modelu; pole `text` w odpowiedzi zawsze zawiera
+pełny wyekstrahowany tekst.
 
 Przykładowe żądanie (`content_base64` skrócony):
 
@@ -370,7 +418,9 @@ Przykładowe żądanie (`content_base64` skrócony):
 {
   "content_base64": "JVBERi0xLjcKJeLjz9MKMyAwIG9iago...",
   "filename": "pismo.pdf",
-  "content_type": "application/pdf"
+  "content_type": "application/pdf",
+  "head_percent": 45,
+  "tail_percent": 35
 }
 ```
 
@@ -400,7 +450,9 @@ Wyjście (`SummarizeDocumentResponse`) — streszczenie + **pełny** wyekstrahow
       "prompt_tokens": 1200,
       "completion_tokens": 90,
       "total_tokens": 1290
-    }
+    },
+    "sent_chars": 4200,
+    "parts": null
   }
 }
 ```
@@ -410,16 +462,16 @@ Pola odpowiedzi:
 | Pole | Opis |
 |---|---|
 | `summary` | Streszczenie pod dekretację (wypunktowanie kluczowych pól: typ pisma, nadawca, czego dotyczy, termin, oczekiwana akcja). |
-| `text` | **Pełny** wyekstrahowany tekst (przed truncacją pod okno modelu); gdy był dłuższy niż `LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko początek. |
+| `text` | **Pełny** wyekstrahowany tekst (przed truncacją pod okno modelu); gdy był dłuższy niż `LLM_MAX_INPUT_CHARS`, `summarization.truncated` mówi, że model widział tylko fragmenty, a `summarization.parts` wskazuje ich zakresy w tym polu. |
 | `extraction` | Metadane etapu ekstrakcji — pola jak w `POST /extract` wyżej. |
-| `summarization` | Metadane etapu streszczenia — pola jak w `POST /summarize` wyżej. |
+| `summarization` | Metadane etapu streszczenia — pola jak w `POST /summarize` wyżej (w tym `sent_chars` i `parts`). |
 
 Kody błędów = **unia** `/extract` i `/summarize` (dokument przechodzi przez obie warstwy):
 
 | Kod | Kiedy |
 |---|---|
 | `413` | Plik większy niż `MAX_UPLOAD_BYTES`. |
-| `422` | Złe base64 / pusty plik / Tika odrzuciła plik / brak treści po ekstrakcji / puste wejście do LLM. |
+| `422` | Złe base64 / pusty plik / Tika odrzuciła plik / brak treści po ekstrakcji / puste wejście do LLM / niepoprawne proporcje (`head_percent`/`tail_percent`). |
 | `500` | Błędna konfiguracja dostawcy LLM / zły klucz (nasz config serwera). |
 | `502` | `tika-server` niedostępny / inny błąd po stronie dostawcy LLM. |
 | `503` | Dostawca LLM dławi (limit zapytań / kwota). |
@@ -492,6 +544,19 @@ $streszczenie = $client->summarize('Długa treść pisma...');  // POST /summari
 echo $streszczenie->summary;
 ```
 
+Proporcje trunkacji (opcjonalne; `null` = domyślne serwera 45/35) i fragmenty, które widział model:
+
+```php
+$wynik = $client->extractAndSummarizeFile('/sciezka/pismo.pdf', headPercent: 45, tailPercent: 55);
+
+$meta = $wynik->summarization;
+if ($meta->truncated) {
+    echo $meta->sentChars;                        // długość tekstu wysłanego do modelu
+    $koniec = $meta->parts->tail;                 // SummarizePart: percent / start / end
+    echo mb_substr($wynik->text, $koniec->start, $koniec->end - $koniec->start, 'UTF-8');
+}
+```
+
 ## Uwagi techniczne
 
 #### Limity i jakość ekstrakcji
@@ -507,7 +572,7 @@ limit znaków tekstu przekazywanego do LLM.
 | `MAX_UPLOAD_BYTES` | 20 MiB | Maksymalny rozmiar zdekodowanego pliku. Sprawdzany na zdekodowanych bajtach, przed kontaktem z Apache Tika. Powyżej → `413`. |
 | `MAX_OCR_PAGES` | 30 | Maksymalna liczba stron PDF przekazywanych do Apache Tika. Dłuższy PDF jest obcinany do pierwszych N stron przed wysłaniem (ochrona przed kosztownym OCR). |
 | Próg PUA | 30% | Udział znaków Private Use Area w warstwie tekstowej, powyżej którego warstwa jest uznawana za wadliwą i wymuszany jest OCR-fallback (`ocr_only`). |
-| `LLM_MAX_INPUT_CHARS` | 90 000 | Maksymalna liczba znaków tekstu przekazywanego do LLM (`POST /summarize` i `POST /extract-and-summarize`). Dłuższy tekst jest obcinany do pierwszych N znaków przed wysłaniem do modelu (dopasowanie do okna kontekstu). |
+| `LLM_MAX_INPUT_CHARS` | 90 000 | Maksymalna liczba znaków tekstu przekazywanego do LLM (`POST /summarize` i `POST /extract-and-summarize`). Dłuższy tekst jest skracany do początku, środka i końca dokumentu (proporcje `head_percent`/`tail_percent`) ze znacznikami pominięcia, liczonymi do limitu (dopasowanie do okna kontekstu). |
 
 `MAX_UPLOAD_BYTES`, `MAX_OCR_PAGES` i `LLM_MAX_INPUT_CHARS` ustawia się przez ENV (sekcja
 „Konfiguracja"). Próg PUA jest wartością wewnętrzną komponentu `PuaDetector` (nie ENV);
@@ -521,7 +586,7 @@ Uzupełnienie do powyższych ustawień:
   dokumentu. Limit obejmuje każdy duży PDF, nie tylko skany.
 - **Limit znaków do LLM to truncacja pod okno modelu, nie limit ekstrakcji.** Działa na tekście
   już wyekstrahowanym, tuż przed streszczeniem, dlatego pole `text` w odpowiedzi zawiera pełną
-  treść, a metadana `truncated` wskazuje, czy model otrzymał jedynie jej początek.
+  treść, a metadane `truncated` / `parts` wskazują, czy i które jej fragmenty otrzymał model.
 - **Detekcja wadliwej warstwy tekstowej (PUA).** Niektóre PDF-y (np. wydruki z części drukarek
   PDF) mają warstwę tekstową, ale jej znaki należą do Private Use Area (uszkodzona mapa
   `ToUnicode`). Ekstrakcja natywna zwraca wtedy nieczytelny tekst zamiast pustego wyniku, a

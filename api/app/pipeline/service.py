@@ -21,7 +21,7 @@ import logging
 from pydantic import BaseModel, Field
 
 from app.extraction import ExtractionMetadata, ExtractionResult, ExtractionService
-from app.summarization import SummarizationMetadata, SummarizationResult, SummarizationService
+from app.summarization import DEFAULT_HEAD_PERCENT, DEFAULT_TAIL_PERCENT, SummarizationMetadata, SummarizationResult, SummarizationService
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,8 @@ class PipelineResult(BaseModel):
     """Domenowy wynik pełnego przebiegu: streszczenie + pełny tekst + metadane obu etapów.
 
     `text` to PEŁNY wyekstrahowany tekst (przed truncacją pod okno modelu) — gdy był dłuższy
-    niż limit LLM, model widział tylko początek, o czym mówi `summarization.truncated`.
+    niż limit LLM, model widział tylko fragmenty (początek / środek / koniec), o czym mówią
+    `summarization.truncated` i `summarization.parts` (zakresy liczone względem `text`).
     Metadane obu etapów ZAGNIEŻDŻONE, by uniknąć kolizji nazw (`char_count` ekstrakcji vs
     `input_chars` summaryzacji) i by każdy etap był diagnozowalny osobno.
     """
@@ -114,17 +115,22 @@ class PipelineService:
     async def process(
         self,
         *,
-        data: bytes,                      # surowe bajty pliku (PDF/DOCX/PNG/...)
-        content_type: str | None = None,  # MIME jako podpowiedź dla Tiki; None = autodetekcja
-        filename: str | None = None,      # nazwa pliku jako podpowiedź typu; None = pomijamy
+        data: bytes,                               # surowe bajty pliku (PDF/DOCX/PNG/...)
+        content_type: str | None = None,           # MIME jako podpowiedź dla Tiki; None = autodetekcja
+        filename: str | None = None,               # nazwa pliku jako podpowiedź typu; None = pomijamy
+        head_percent: int = DEFAULT_HEAD_PERCENT,  # proporcja budżetu LLM na początek 0–100, np. 45
+        tail_percent: int = DEFAULT_TAIL_PERCENT,  # proporcja budżetu LLM na koniec 0–100, np. 35
     ) -> PipelineResult:
         """Opis metody:
         Przepuść plik przez cały pipeline: ekstrakcja -> streszczenie -> złożenie wyniku.
+        Proporcje trunkacji przekazuje bez zmian do summaryzacji (dotyczą tylko wejścia modelu —
+        `text` w wyniku zostaje pełny).
 
         Przyklad argumentow:
             data=b"%PDF-1.7 ..."
             content_type="application/pdf"
             filename="pismo.pdf"
+            head_percent=45, tail_percent=35
 
         Przyklad wyniku:
             PipelineResult(summary="Urząd Skarbowy wzywa do zapłaty...", text="Pełna treść pisma...",
@@ -146,7 +152,11 @@ class PipelineService:
             "Pipeline: ekstrakcja %d znaków (typ=%s) -> summaryzacja.",
             extraction.metadata.char_count, extraction.metadata.content_type,
         )
-        summarization = await self._summarization.summarize(text=extraction.text)
+        summarization = await self._summarization.summarize(
+            text         = extraction.text,
+            head_percent = head_percent,
+            tail_percent = tail_percent,
+        )
 
         # 4) Złożenie wyniku obu etapów (czysty helper).
         return self._build_result(extraction, summarization)

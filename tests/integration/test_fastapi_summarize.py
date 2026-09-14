@@ -28,6 +28,8 @@ def test_summarize_przez_endpoint(fastapi_client):
     assert meta["input_chars"] == len(text)              # długość wejścia (bez whitespace do strip)
     assert meta["truncated"] is False                    # krótki tekst, bez truncacji
     assert meta["usage"]["total_tokens"] > 0             # zużycie zmapowane
+    assert meta["sent_chars"] == len(text)               # do modelu poszła całość
+    assert meta["parts"] is None                         # bez cięcia -> brak części
 
 
 def test_summarize_puste_wejscie_daje_422(fastapi_client):

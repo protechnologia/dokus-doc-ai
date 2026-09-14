@@ -49,3 +49,4 @@ def test_summarize_realny_llm_daje_polskie_streszczenie():
     assert result.metadata.model                             # realny model w metadanych
     assert result.metadata.usage.total_tokens > 0            # zużycie realnie zmapowane
     assert result.metadata.truncated is False                # krótkie pismo, bez truncacji
+    assert result.metadata.parts is None                     # bez cięcia -> brak części

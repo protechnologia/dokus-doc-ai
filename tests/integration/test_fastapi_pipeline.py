@@ -56,6 +56,8 @@ def test_extract_and_summarize_docx_przez_endpoint(fastapi_client):
     assert su["model"]                                        # model obecny
     assert su["truncated"] is False                           # krotki tekst, bez truncacji
     assert su["usage"]["total_tokens"] > 0                    # zuzycie zmapowane
+    assert su["sent_chars"] == su["input_chars"]              # do modelu poszla calosc
+    assert su["parts"] is None                                # bez ciecia -> brak czesci
 
 
 def test_extract_and_summarize_zly_base64_daje_422(fastapi_client):

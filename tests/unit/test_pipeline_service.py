@@ -12,7 +12,7 @@ import asyncio
 from app.extraction import EmptyExtractionError, ExtractionMetadata, ExtractionResult, TikaUnavailableError
 from app.llm import LLMUsage
 from app.pipeline.service import PipelineService
-from app.summarization import EmptyInputError, SummarizationMetadata, SummarizationResult
+from app.summarization import EmptyInputError, SummarizationMetadata, SummarizationResult, TextPart, TextParts
 
 
 # --- Atrapy obu serwisow ---------------------------------------------------------
@@ -41,8 +41,8 @@ class _RecordingSummarization:
         self._result = result
         self._error = error
 
-    async def summarize(self, *, text) -> SummarizationResult:
-        self.calls.append({"text": text})
+    async def summarize(self, *, text, head_percent, tail_percent) -> SummarizationResult:
+        self.calls.append({"text": text, "head_percent": head_percent, "tail_percent": tail_percent})
         if self._error is not None:
             raise self._error
         return self._result
@@ -61,7 +61,7 @@ def _summarization_result(summary: str = "Urząd wzywa do zapłaty.") -> Summari
     """Gotowy `SummarizationResult` z realistycznymi metadanymi (do testów orkiestracji)."""
     meta = SummarizationMetadata(
         model="rec-model", input_chars=120, truncated=False,
-        usage=LLMUsage(prompt_tokens=80, completion_tokens=20, total_tokens=100),
+        usage=LLMUsage(prompt_tokens=80, completion_tokens=20, total_tokens=100), sent_chars=120,
     )
     return SummarizationResult(summary=summary, metadata=meta)
 
@@ -79,8 +79,20 @@ def test_process_woła_ekstrakcję_potem_summaryzację_z_jej_tekstem():
 
     # Ekstrakcja dostala surowe wejscie...
     assert extraction.calls[0] == {"data": b"%PDF-1.7", "content_type": "application/pdf", "filename": "pismo.pdf"}
-    # ...a summaryzacja dostala dokladnie tekst z ekstrakcji (pelny, niezmieniony).
-    assert summarization.calls[0] == {"text": "Treść z ekstrakcji"}
+    # ...a summaryzacja dostala dokladnie tekst z ekstrakcji (pelny, niezmieniony) i domyslne proporcje.
+    assert summarization.calls[0] == {"text": "Treść z ekstrakcji", "head_percent": 45, "tail_percent": 35}
+
+
+def test_process_przekazuje_proporcje_trunkacji_do_summaryzacji():
+    """Własne proporcje (45/55) trafiają bez zmian do summaryzacji — pipeline ich nie interpretuje."""
+    extraction = _RecordingExtraction(result=_extraction_result("Treść z ekstrakcji"))
+    summarization = _RecordingSummarization(result=_summarization_result())
+    svc = PipelineService(extraction, summarization)
+
+    asyncio.run(svc.process(data=b"x", head_percent=45, tail_percent=55))
+
+    assert summarization.calls[0]["head_percent"] == 45
+    assert summarization.calls[0]["tail_percent"] == 55
 
 
 # --- process: zlozenie wyniku ----------------------------------------------------
@@ -100,6 +112,24 @@ def test_process_składa_wynik_obu_etapów():
     assert result.extraction.ocr_used is True
     assert result.summarization.model == "rec-model"
     assert result.summarization.usage.total_tokens == 100
+
+
+def test_process_text_pelny_mimo_trunkacji():
+    """Gdy summaryzacja cięła wejście modelu, `text` w wyniku i tak jest PEŁNYM tekstem z ekstrakcji."""
+    full_text = "Pełna treść pisma " * 100
+    truncated_meta = SummarizationMetadata(
+        model="rec-model", input_chars=len(full_text), truncated=True, usage=LLMUsage(), sent_chars=172,
+        parts=TextParts(head=TextPart(percent=45, start=0, end=45), middle=TextPart(percent=20, start=890, end=910), tail=TextPart(percent=35, start=1765, end=1800)),
+    )
+    extraction = _RecordingExtraction(result=_extraction_result(full_text))
+    summarization = _RecordingSummarization(result=SummarizationResult(summary="Streszczenie", metadata=truncated_meta))
+    svc = PipelineService(extraction, summarization)
+
+    result = asyncio.run(svc.process(data=b"x"))
+
+    assert result.text == full_text                       # pełny tekst (pod wyszukiwarkę), nie wejście modelu
+    assert result.summarization.truncated is True
+    assert result.summarization.parts.middle.start == 890
 
 
 # --- process: propagacja wyjatkow obu warstw -------------------------------------
