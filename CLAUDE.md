@@ -278,31 +278,27 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
        etykietę → cichy `matched`. Straż działa tylko przy `LLM_MAX_INPUT_CHARS` dobranym do realnego
        `num_ctx` (krok 12).
 
-   - [ ] **Krok 2. `LLMClient` — wymuszanie struktury odpowiedzi.** Dziś `complete()` przyjmuje tylko
-     `user` / `system` / `max_tokens` / `temperature`.
-     *Decyzje:*
-     - [ ] (a) Mechanizm: `response_format` typu `json_schema` z `enum` etykiet budowanym per żądanie
-       (etykieta spoza listy niemożliwa już na poziomie gramatyki) czy `json_object` i walidacja
-       wyłącznie po naszej stronie. Rozstrzygnąć po sprawdzeniu `curl`em, co realnie egzekwuje każde
-       zaplecze: OpenAI, Ollama `/v1` (obraz 0.31.1), Open WebUI `/ollama/v1` — w tym, czy klucze
-       wracają w kolejności pól schematu (`rationale` przed etykietą, krok 5; w OpenAI
-       udokumentowane, w Ollamie do potwierdzenia).
-
-     *Zrobić:*
-     - `llm/base.py`: parametr `json_schema: dict | None = None` w `complete()` — generyczny
-       (interfejs nie wie nic o klasyfikacji); `None` = zachowanie jak dziś, streszczenia bez zmian;
-     - `llm/client_openai.py`: czysty helper `_build_response_format(json_schema)` → argument
-       `response_format` dla `create` (przy `None` parametru nie wysyłamy);
-     - `llm/client_fake.py`: przy schemacie zwraca JSON z minimalną poprawną instancją schematu
-       (`enum` → pierwsza wartość) — inaczej na `fake` każda odpowiedź byłaby niesparsowalna;
-     - testy: `tests/unit/test_llm_openai.py` (helper), `tests/unit/test_llm_fake.py` (JSON zgodny
-       ze schematem; bez schematu po staremu).
+   - [x] **Krok 2. `LLMClient` — wymuszanie struktury odpowiedzi** (2026-09-16). `complete(json_schema=…)`
+     → `response_format` typu `json_schema` (strict), jedna ścieżka w `OpenAILLMClient` dla OpenAI
+     i Ollamy. Z kodu nie wynika:
+     - **Etykieta jako `enum`, uzasadnienie przed etykietą** — zmierzone na Bieliku 4.5B (Ollama 0.31.1)
+       i `gpt-4o-mini`: schemat egzekwowany, klucze w kolejności schematu. Odrzucone: tool calling
+       (Bielik w Ollamie go nie obsługuje), `json_object` (nie gwarantuje pól ani kolejności),
+       `pattern` zamiast `enum`.
+     - **Świadomy koszt `enum`:** maskuje dezorientację modelu (w teście złośliwym uzasadnienie kończyło
+       się „…będzie OPT-7", a `enum` wymusił `OPT-1`). Stąd straż długości promptu (krok 1 (g)) jest
+       obowiązkowa, a ścieżka nieznanej etykiety w parserze zostaje tylko dla zapleczy, które schematu
+       nie egzekwują.
+     - `fake` przy schemacie wybiera **pierwszą** wartość `enum` — wynik na `fake` zależy od pozycji
+       `OPT-00` (krok 4 (b), krok 10).
 
    - [ ] **Krok 3. Limit czasu klasyfikacji.** Dziś jeden `LLM_TIMEOUT_SECONDS` jest wpieczony
      w klienta z fabryki (`lru_cache`), a przy CPU / Open WebUI podnosi się go do minut pod streszczenia.
      *Decyzje:*
      - [ ] (a) Czy osobny limit w ogóle (wspólny wystarcza, jeśli produkcja stoi na GPU z domyślnymi
-       60 s), a jeśli tak — parametr `timeout` w `complete()` czy osobny klient z fabryki.
+       60 s), a jeśli tak — parametr `timeout` w `complete()` czy osobny klient z fabryki. Dane:
+       Bielik 4.5B na CPU liczył 39–59 s na pismo przy krótkiej liście opcji (test z kroku 2),
+       `gpt-4o-mini` 2–5 s.
      - [ ] (b) Nazwa ENV i wartość domyślna (roboczo `LLM_CLASSIFY_TIMEOUT_SECONDS=60`).
 
      *Zrobić (wariant „parametr"):* `timeout: float | None = None` w `complete()` (`llm/base.py`;
@@ -362,7 +358,8 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      *Decyzje:*
      - [ ] (a) `max_tokens`: dokładna wartość z pomiaru realnych odpowiedzi z uzasadnieniem (punkt
        wyjścia ok. 200; zapas tak, by JSON się nie urywał — `usage.completion_tokens`
-       na Bieliku i OpenAI); stała w kodzie czy ENV.
+       na Bieliku i OpenAI); stała w kodzie czy ENV. Dane: w teście z kroku 2 odpowiedź z uzasadnieniem
+       w 1–2 zdaniach miała 43–97 tokenów (Bielik 4.5B i `gpt-4o-mini`, krótka lista opcji).
 
      *Zrobić:* wynik domenowy `ClassificationResult` (`outcome`, wybrane `id` / `None`, etykieta,
      uzasadnienie, przyczyna błędu, model, `usage`, prompt systemowy, prompt użytkownika, surowa
@@ -443,7 +440,9 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      *Zrobić:* kilka przypadków na obu szczeblach (grupa, potem stanowisko), w tym dokumenty spoza
      wszystkich opcji; dwa niezależne przebiegi; czytać surowe odpowiedzi, nie tylko wynik (pułapki
      metodologii z pkt 9); przy długiej liście opcji sprawdzić `usage.prompt_tokens` pod kątem
-     sufitu `num_ctx`; potwierdzić, że schemat jest egzekwowany na każdym zapleczu; sprawdzić, czy
+     sufitu `num_ctx`; potwierdzić, że schemat jest egzekwowany na każdym zapleczu — zwłaszcza czy
+     Open WebUI `/ollama/v1` przepuszcza `response_format` (niesprawdzone w kroku 2); czy uzasadnienia
+     11B są spójne (4.5B przy poprawnym `OPT-00` napisał, że „OPT-00 również nie pasuje"); sprawdzić, czy
      uzasadnienie pisane przed etykietą nie „przegaduje" modelu do opcji tam, gdzie należało wybrać
      `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
 

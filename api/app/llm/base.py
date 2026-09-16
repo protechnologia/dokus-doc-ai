@@ -12,6 +12,7 @@ implementacji + konfiguracji, nie logiki.
 
 from __future__ import annotations
 from abc        import ABC, abstractmethod
+from typing     import Any
 from pydantic   import BaseModel, Field
 
 
@@ -67,26 +68,39 @@ class LLMClient(ABC):
     Celowo minimalna i generyczna — wystarcza dla summaryzacji (krok 2.4), a nie
     przywiazuje sie do zadnego dostawcy. Bogatszy interfejs (lista `messages`,
     streaming, narzedzia) dolozymy dopiero, gdy logika tego naprawde zazada.
+
+    Wymuszanie struktury odpowiedzi (`json_schema`) tez jest generyczne: interfejs nie
+    wie nic o klasyfikacji ani etykietach — dostaje gotowy JSON Schema od wolajacego.
+    Tool calling swiadomie odrzucony: Bielik w Ollamie go nie obsluguje.
     """
 
     @abstractmethod
     async def complete(
         self,
         *,
-        user:        str,                # tresc usera, np. "Streszcz dokument:\n<tekst>"
-        system:      str | None = None,  # prompt systemowy (rola/ton; ustawiany w 2.4); None = brak
-        max_tokens:  int | None = None,  # limit dlugosci odpowiedzi, np. 300; None = default dostawcy
-        temperature: float = 0.0,        # losowosc; 0.0 = stabilnie (streszczenia maja byc powtarzalne)
+        user:        str,                           # tresc usera, np. "Streszcz dokument:\n<tekst>"
+        system:      str | None = None,             # prompt systemowy (rola/ton; ustawiany w 2.4); None = brak
+        max_tokens:  int | None = None,             # limit dlugosci odpowiedzi, np. 300; None = default dostawcy
+        temperature: float = 0.0,                   # losowosc; 0.0 = stabilnie (streszczenia maja byc powtarzalne)
+        json_schema: dict[str, Any] | None = None,  # JSON Schema odpowiedzi, np. {"type": "object", ...}; None = wolny tekst
     ) -> LLMResult:
         """Opis metody:
         Wygeneruj odpowiedz dla pojedynczego promptu uzytkownika.
 
+        Z `json_schema` dostawca ma wymusic odpowiedz zgodna ze schematem, a `LLMResult.text`
+        niesie SUROWY JSON (string) — parsowanie i walidacja to rzecz wolajacego (surowa
+        odpowiedz wraca tez do audytu). Schemat musi spelniac wymogi trybu strict: kazde pole
+        obiektu w `required`, `additionalProperties: false`. Kolejnosc pol w `properties`
+        jest kolejnoscia kluczy w odpowiedzi (model pisze token po tokenie).
+
         Przyklad argumentow:
             user="Streszcz: <tekst>"
             system="Po polsku"
+            json_schema=None   # albo {"type": "object", "properties": {...}, "required": [...], "additionalProperties": False}
 
         Przyklad wyniku:
             LLMResult(text="<streszczenie>", model="<model>", usage=LLMUsage(...))
+            LLMResult(text='{"rationale": "...", "label": "OPT-2"}', ...)   # przy json_schema
 
         Raises:
             LLMError: dowolny blad warstwy LLM (auth/limit/timeout/odpowiedz).
