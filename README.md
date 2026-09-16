@@ -174,6 +174,7 @@ Dostępne endpointy:
 | `POST /extract` | Czysta ekstrakcja: plik → tekst + metadane. |
 | `POST /summarize` | Czysta summaryzacja: tekst → streszczenie. |
 | `POST /extract-and-summarize` | Pełny pipeline: plik → tekst → streszczenie. |
+| `POST /classify` | Wybór jednej opcji z listy (albo żadnej) na podstawie streszczeń. **W przygotowaniu.** |
 
 Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
 ten sam identyfikator trafia do logów, co ułatwia korelację.
@@ -489,6 +490,178 @@ curl -X POST http://localhost:8000/extract-and-summarize \
 > Dokument przechodzi przez **wszystkie trzy** bramki naraz (`MAX_UPLOAD_BYTES` → `MAX_OCR_PAGES`
 > → `LLM_MAX_INPUT_CHARS`) — tu spójność tych limitów jest najważniejsza w praktyce: patrz
 > „Limity i jakość ekstrakcji”.
+
+### `POST /classify`
+
+> **Status:** kontrakt zamrożony (potwierdzony przez konsumenta 2026-09-16). Endpoint nie jest
+> jeszcze zaimplementowany (TODO pkt 1 w [CLAUDE.md](CLAUDE.md)).
+
+Wybór **jednej opcji z przekazanej listy albo żadnej** na podstawie streszczeń dokumentu. Usługa
+nie zna znaczenia opcji: wszystko, co model o nich wie, pochodzi z pól `name`, `description`
+i `examples`. Model widzi opcje pod krótkimi etykietami nadanymi przez usługę, więc identyfikatory
+`id` do niego nie trafiają. Usługa zawsze dokłada do listy jawną pozycję „brak dopasowania”. Bez
+niej model postawiony przed zamkniętą listą prawie zawsze wybiera którąś opcję, nawet gdy żadna
+nie pasuje.
+
+Jedno żądanie oznacza jedno wywołanie modelu (`temperature = 0`, wymuszona struktura odpowiedzi)
+i jeden wybór. Wybór wielostopniowy (np. najpierw grupa, potem pozycja w grupie) to kolejne
+żądania po stronie klienta. Prompt w całości buduje usługa; klient przesyła wyłącznie dane.
+
+Wejście (`ClassifyRequest`):
+
+| Pole | Wymagane | Opis |
+|---|---|---|
+| `summaries` | tak | Lista streszczeń plików dokumentu, np. pola `summary` z `POST /summarize`. Co najmniej jeden element. Kolejność nie ma znaczenia. |
+| `options` | tak | Lista opcji do wyboru. Co najmniej jeden element. |
+
+Pola opcji (`options[]`):
+
+| Pole | Wymagane | Opis |
+|---|---|---|
+| `id` | tak | Identyfikator opcji po stronie klienta: liczba całkowita albo string. Usługa traktuje go jak nieprzezroczysty klucz i zwraca w tym samym typie (`"21"` pozostaje stringiem). |
+| `name` | tak | Nazwa opcji. |
+| `description` | tak | Opis: czego dotyczy opcja. |
+| `examples` | nie | Przykłady spraw pasujących do opcji, jako tekst. `null`, brak klucza albo pusty tekst oznacza brak przykładów. |
+
+Przykładowe żądanie:
+
+```json
+{
+  "summaries": [
+    "• Typ pisma: skarga\n• Nadawca: Jan Kowalski\n• Czego dotyczy: naliczenie przez operatora telekomunikacyjnego opłat za niezamówione usługi\n• Oczekiwana akcja: interwencja wobec operatora i zwrot nadpłaty",
+    "• Typ pisma: faktura VAT\n• Nadawca: TelKom S.A.\n• Czego dotyczy: rozliczenie usług telekomunikacyjnych za sierpień 2026, kwota 312,40 zł"
+  ],
+  "options": [
+    {
+      "id": 21,
+      "name": "Skargi i interwencje konsumenckie",
+      "description": "Skargi konsumentów na dostawców usług telekomunikacyjnych i pocztowych, wnioski o interwencję.",
+      "examples": "Skarga na zawyżony rachunek; reklamacja nieuwzględniona przez operatora."
+    },
+    {
+      "id": 22,
+      "name": "Rynek pocztowy",
+      "description": "Sprawy operatorów pocztowych: wpisy do rejestru, sprawozdania, kontrole.",
+      "examples": null
+    },
+    {
+      "id": "numeracja-7",
+      "name": "Numeracja",
+      "description": "Przydział i rezerwacja zasobów numeracji.",
+      "examples": null
+    }
+  ]
+}
+```
+
+Wyjście (`ClassifyResponse`) — wynik, uzasadnienie, pola audytu i metadane:
+
+```json
+{
+  "outcome": "matched",
+  "option_id": 21,
+  "rationale": "Skarga konsumenta na opłaty naliczone przez operatora telekomunikacyjnego, z wnioskiem o interwencję, odpowiada opisowi opcji.",
+  "error": null,
+  "system_prompt": "Jesteś asystentem, który wybiera ...",
+  "user_prompt": "Streszczenia dokumentu: ...",
+  "raw_response": "{\"rationale\": \"Skarga konsumenta na opłaty ...\", \"option\": \"OPT-1\"}",
+  "metadata": {
+    "model": "gpt-4o-mini",
+    "usage": {
+      "prompt_tokens": 1180,
+      "completion_tokens": 58,
+      "total_tokens": 1238
+    }
+  }
+}
+```
+
+Brak dopasowania (fragment — pozostałe pola jak wyżej):
+
+```json
+{
+  "outcome": "no_match",
+  "option_id": null,
+  "rationale": "Pismo dotyczy wniosku o dofinansowanie budowy sieci światłowodowej; żadna z opcji nie obejmuje programów dofinansowania.",
+  "error": null
+}
+```
+
+Odpowiedź modelu, której nie da się użyć (fragment — tu odpowiedź urwana limitem długości):
+
+```json
+{
+  "outcome": "invalid_response",
+  "option_id": null,
+  "rationale": null,
+  "error": "Niepoprawny JSON w odpowiedzi modelu: Unterminated string starting at: line 1 column 15 (char 14).",
+  "raw_response": "{\"rationale\": \"Pismo dotyczy skargi konsumenta na operatora, który naliczył"
+}
+```
+
+Pola odpowiedzi:
+
+| Pole | Opis |
+|---|---|
+| `outcome` | `matched` — model wybrał jedną z opcji; `no_match` — model uznał, że żadna opcja nie pasuje; `invalid_response` — odpowiedzi modelu nie da się użyć (niepoprawny lub urwany JSON, brak pola, etykieta spoza listy). |
+| `option_id` | `id` wybranej opcji, w typie z żądania. |
+| `rationale` | Uzasadnienie wyboru, 1–2 zdania po polsku — także przy `no_match`. |
+| `error` | Przyczyna, dla której odpowiedzi modelu nie da się użyć. |
+| `system_prompt` | Prompt systemowy wysłany do modelu. |
+| `user_prompt` | Prompt użytkownika wysłany do modelu. |
+| `raw_response` | Surowa odpowiedź modelu przed parsowaniem; przy `invalid_response` bywa niepoprawnym JSON-em. |
+| `metadata.model` | Model, który odpowiedział. |
+| `metadata.usage` | Zużycie tokenów (`prompt_tokens` / `completion_tokens` / `total_tokens`). |
+
+Które pola są wypełnione przy danym wyniku (pola audytu i `metadata` — zawsze):
+
+| `outcome` | `option_id` | `rationale` | `error` |
+|---|---|---|---|
+| `matched` | `id` opcji | tekst | `null` |
+| `no_match` | `null` | tekst | `null` |
+| `invalid_response` | `null` | `null` | tekst |
+
+Wskazówki dla klienta:
+
+- **Decyzję podejmuj po `outcome`, nie po `option_id`.** `option_id: null` występuje zarówno przy
+  `no_match`, jak i przy `invalid_response`.
+- **Każda odpowiedź modelu to `200`** — także `no_match` i `invalid_response`. Kody `5xx` oznaczają,
+  że odpowiedzi modelu nie było.
+- **Pola audytu zapisuj jako tekst, nie parsuj ich.** Brzmienie promptów, etykiety opcji i klucze
+  JSON-a w `raw_response` są wewnętrzne i mogą się zmieniać między wersjami usługi.
+- **Usługa sprawdza strukturę, nie treść pól.** Puste streszczenie, opcja bez opisu czy
+  powtórzone `id` nie dają `422`. Dokumentu bez streszczeń nie klasyfikuj, a kompletność katalogu
+  opcji zapewnij po swojej stronie: opcji bez treści model po prostu nie wybierze.
+- **Usługa sama nie ponawia wywołań.** Sensownie ponowić można `invalid_response` oraz
+  `502`/`503`/`504`. Przy `413`/`422`/`500` to samo wejście i ta sama konfiguracja dadzą ten sam wynik.
+
+Kody błędów (ciało jak w pozostałych endpointach: `{"detail": "..."}`, bez promptów):
+
+| Kod | Kiedy |
+|---|---|
+| `413` | Złożony prompt (prompt systemowy + streszczenia + opcje) dłuższy niż `LLM_MAX_INPUT_CHARS` znaków. Model nie jest wywoływany; niczego nie ucinamy. |
+| `422` | Brak wymaganego pola, pusta lista `summaries` / `options`, zły typ pola (np. `id` inny niż liczba całkowita lub string). |
+| `500` | Błędna konfiguracja dostawcy LLM / zły klucz (nasz config serwera). |
+| `502` | Inny błąd po stronie dostawcy LLM. |
+| `503` | Dostawca LLM dławi (limit zapytań / kwota). |
+| `504` | Dostawca LLM nie odpowiedział w czasie (timeout). |
+
+Wywołanie:
+
+```bash
+curl -X POST http://localhost:8000/classify \
+  -H 'Content-Type: application/json' \
+  -d '{"summaries": ["• Typ pisma: skarga\n• Czego dotyczy: zawyżony rachunek operatora"],
+       "options": [{"id": 21, "name": "Skargi i interwencje konsumenckie", "description": "Skargi konsumentów na dostawców usług."},
+                   {"id": 22, "name": "Rynek pocztowy", "description": "Sprawy operatorów pocztowych."}]}'
+```
+
+> W przeciwieństwie do `POST /summarize` za długie wejście jest **odrzucane** (`413`), a nie
+> skracane: ucięcie listy opcji zmieniłoby zbiór wyboru. Limit chroni tylko wtedy, gdy
+> `LLM_MAX_INPUT_CHARS` odpowiada realnemu oknu modelu. Serwer modelu ucina za długi prompt po
+> cichu, od początku, razem z instrukcjami — patrz „Okno modelu ≠ okno, które dostaniesz”.
+> Sygnałem takiego cięcia jest `metadata.usage.prompt_tokens` zatrzymane na okrągłej potędze
+> dwójki (4096, 8192).
 
 ## Integracje
 

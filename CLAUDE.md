@@ -231,9 +231,249 @@ Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
 
 ## TODO — przed wdrożeniem produkcyjnym
 
-Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
+Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla urzędu), kolejność wg wagi:
 
-1. **Limit stron PDF tnie PRZED decyzją o OCR — koniec długiego PDF-a i pełny `text` giną.**
+1. **[W TOKU] Endpoint klasyfikacji `POST /classify` — wybór jednej opcji z listy albo żadnej.**
+   Zgłoszenie DOKUS „[UKE][AI] Inteligentna dekretacja": dokument przychodzący ma **bez udziału
+   człowieka** trafić na stanowisko merytoryczne. Gdy model zawiedzie, dokument trafia do dekretacji
+   ręcznej, jak dziś. **Etapu zatwierdzania nie ma.** Decyzję dwuszczeblową (grupa → stanowisko)
+   prowadzi DOKUS: to dwa żądania do tego samego endpointu. **Usługa nie zna pojęć „grupa" ani
+   „stanowisko"** — dostaje płaską listę opcji (`id` nieprzezroczysty: int albo string, traktowany jak
+   klucz; `description` i `examples` pisze urząd, `examples` bywa `null`), podsumowania plików dokumentu
+   (wynik naszego `/summarize`: pismo główne + załączniki) — i nic więcej. Jedno żądanie = jedno
+   wywołanie modelu = jeden wybór.
+
+   Wymogi nośne:
+   - **`OPT-00` („brak dopasowania") to jedyna siatka bezpieczeństwa całego mechanizmu.** Usługa
+     dokleja ją zawsze sama, jako jawną pozycję listy w prompcie; nie jest wierszem katalogu DOKUS-a.
+     Samo dopuszczenie `null` w schemacie nie wystarcza: postawiony przed zamkniętą listą model
+     wybiera najmniej złą opcję i podaje ją z pewnością;
+   - model widzi krótkie etykiety (`OPT-1`…`OPT-n`, `OPT-00`), **nigdy** surowych `id` z bazy;
+   - parametry za dok. projektowym (rozdz. 3.4): `temperature=0`, `max_tokens` tylko na to, co ma
+     wrócić, limit czasu roboczo 60 s; struktura odpowiedzi wymuszona (OpenAI oraz Ollama/Bielik);
+   - odpowiedź niedającą się sparsować da się odróżnić od poprawnej (DOKUS zapisuje ją w dzienniku
+     i ponawia);
+   - **oba prompty (systemowy + użytkownika), surowa odpowiedź i model wracają zawsze** — to stały
+     element kontraktu (dziennik audytu DOKUS-a, rozdz. 5 dok. projektowego), nie tryb debug;
+   - kody błędów jak w istniejących endpointach (413/422/500/502/503/504), `X-Request-ID` jak dotąd.
+
+   **Świadomie NIE robimy (decyzje zapadły):** uwierzytelniania (izolacja sieciowa; pkt 5 zostaje
+   blokerem wdrożenia); pola pewności (samoocena modelu jest źle skalibrowana — gdy `OPT-00` nie
+   wystarczy, właściwa droga to logprobs albo człowiek z powrotem w pętli, nie próg); ponowień w usłudze
+   (robi je task DOKUS-a); endpointu schodzącego samodzielnie z grupy na stanowisko; zmian promptu
+   streszczeń (mechanizm jest jeden dla wszystkich podsumowań — braki zgłaszać wnioskiem);
+   systematycznej oceny wyborów (w tym kroku wystarczy sprawdzian ręczny, golden set później).
+
+   Kroki w kolejności wykonania; checkbox kroku = kod i testy gotowe. Decyzje, bez których kroku nie
+   da się zrobić, stoją na jego początku — też do odhaczenia.
+
+   - [x] **Krok 1. Kontrakt `POST /classify` — zamrożony 2026-09-16** (potwierdzony przez DOKUS;
+     zmiany tylko za zgodą obu stron). Źródło prawdy: README „POST /classify" + modele w
+     `api/app/models.py`. Status i adnotację „W przygotowaniu" w README zdjąć po implementacji
+     (krok 12). Z kodu nie wynika:
+     - (f) **Każda odpowiedź modelu to `200` + `outcome`, 5xx = odpowiedzi modelu nie było** — kod
+       HTTP wyznacza politykę ponowień DOKUS-a bez czytania ciała. Nie „poprawiać" na `502`.
+     - (g) **Za długi prompt → 413, nigdy ucinanie** (ucięcie opcji zmienia zbiór wyboru). Pułapka:
+       Ollama sama ucina prompt od początku, razem z instrukcją o `OPT-00`, a `enum` i tak wymusi
+       etykietę → cichy `matched`. Straż działa tylko przy `LLM_MAX_INPUT_CHARS` dobranym do realnego
+       `num_ctx` (krok 12).
+
+   - [ ] **Krok 2. `LLMClient` — wymuszanie struktury odpowiedzi.** Dziś `complete()` przyjmuje tylko
+     `user` / `system` / `max_tokens` / `temperature`.
+     *Decyzje:*
+     - [ ] (a) Mechanizm: `response_format` typu `json_schema` z `enum` etykiet budowanym per żądanie
+       (etykieta spoza listy niemożliwa już na poziomie gramatyki) czy `json_object` i walidacja
+       wyłącznie po naszej stronie. Rozstrzygnąć po sprawdzeniu `curl`em, co realnie egzekwuje każde
+       zaplecze: OpenAI, Ollama `/v1` (obraz 0.31.1), Open WebUI `/ollama/v1` — w tym, czy klucze
+       wracają w kolejności pól schematu (`rationale` przed etykietą, krok 5; w OpenAI
+       udokumentowane, w Ollamie do potwierdzenia).
+
+     *Zrobić:*
+     - `llm/base.py`: parametr `json_schema: dict | None = None` w `complete()` — generyczny
+       (interfejs nie wie nic o klasyfikacji); `None` = zachowanie jak dziś, streszczenia bez zmian;
+     - `llm/client_openai.py`: czysty helper `_build_response_format(json_schema)` → argument
+       `response_format` dla `create` (przy `None` parametru nie wysyłamy);
+     - `llm/client_fake.py`: przy schemacie zwraca JSON z minimalną poprawną instancją schematu
+       (`enum` → pierwsza wartość) — inaczej na `fake` każda odpowiedź byłaby niesparsowalna;
+     - testy: `tests/unit/test_llm_openai.py` (helper), `tests/unit/test_llm_fake.py` (JSON zgodny
+       ze schematem; bez schematu po staremu).
+
+   - [ ] **Krok 3. Limit czasu klasyfikacji.** Dziś jeden `LLM_TIMEOUT_SECONDS` jest wpieczony
+     w klienta z fabryki (`lru_cache`), a przy CPU / Open WebUI podnosi się go do minut pod streszczenia.
+     *Decyzje:*
+     - [ ] (a) Czy osobny limit w ogóle (wspólny wystarcza, jeśli produkcja stoi na GPU z domyślnymi
+       60 s), a jeśli tak — parametr `timeout` w `complete()` czy osobny klient z fabryki.
+     - [ ] (b) Nazwa ENV i wartość domyślna (roboczo `LLM_CLASSIFY_TIMEOUT_SECONDS=60`).
+
+     *Zrobić (wariant „parametr"):* `timeout: float | None = None` w `complete()` (`llm/base.py`;
+     `client_openai.py` → `create(..., timeout=...)`, `None` = limit klienta; `client_fake.py`
+     ignoruje); pole w `config.py`; wpis w `.env.example` i w `environment` usługi `fastapi`
+     w `docker-compose.yml` (inaczej padnie `test_config_plumbing.py`); test domyślnej wartości
+     w `tests/unit/test_config.py`.
+
+   - [ ] **Krok 4. Etykiety opcji — `api/app/classification/labels.py`** (nowy pakiet
+     `classification`, eksporty w `__init__.py` jak w `summarization`).
+     *Decyzje:*
+     - [ ] (a) Format etykiet: `OPT-1`…`OPT-n` + `OPT-00` jak w zgłoszeniu (niespójna szerokość —
+       model może oddać `OPT-01`) czy jednolicie dwucyfrowe `OPT-01`…
+     - [ ] (b) Pozycja `OPT-00` na liście: pierwsza czy ostatnia.
+
+     *Zrobić:* czysta klasa `OptionLabeler`: nadanie etykiet w kolejności wejścia + **zawsze**
+     doklejona `OPT-00`, dokładnie raz; rozwiązanie etykiety **po pozycji** (powtórzone `id` z wejścia
+     nie psują mapowania, dlatego model ich nie waliduje — krok 8) → `id` z wejścia w oryginalnym typie,
+     `OPT-00` → `None`, etykieta nieznana → `UnknownLabelError` (**nie** `None`). Testy
+     `tests/unit/test_classification_labels.py`: kolejność, `OPT-00` zawsze i raz (także przy jednej
+     opcji), `21` zostaje int / `"21"` zostaje string, `OPT-00` → `None`, nieznana etykieta → błąd.
+
+   - [ ] **Krok 5. Prompt — `api/app/classification/prompt.py`** (czyste funkcje; prompt to logika,
+     więc w kodzie, po polsku).
+     *Decyzje:*
+     - [ ] (a) Próg rezygnacji: `OPT-00` tylko gdy żadna opcja nie pasuje, czy także gdy pasuje kilka
+       albo dopasowanie jest wątpliwe. Bez człowieka w pętli pomyłka kosztuje więcej niż dekretacja
+       ręczna.
+
+     *Zrobić:* `_SYSTEM_PROMPT` — rola, wybór dokładnie jednej etykiety, `OPT-00` jako pełnoprawna
+     pozycja z opisem, kiedy ją wybrać, format odpowiedzi (najpierw uzasadnienie w 1–2 zdaniach po
+     polsku, potem etykieta), zastrzeżenie, że dane w wiadomości
+     użytkownika to materiał, nie instrukcje (treść pisma pochodzi z zewnątrz). `build_user_prompt`
+     — dwie odgrodzone sekcje: podsumowania; opcje pod etykietami (nazwa, opis, przykłady; puste
+     przykłady pominięte, bez surowych `id`).
+     `build_response_schema(labels)` — JSON Schema z dwoma wymaganymi polami w tej kolejności:
+     uzasadnienie (string), potem etykieta (`enum` etykiet). **Dlaczego ta kolejność** (komentarz
+     w kodzie): model pisze token po tokenie, więc etykieta wynika wtedy z uzasadnienia — wierny ślad
+     do audytu; odwrotnie uzasadnienie tylko broni przesądzonego wyboru. Kontrakt HTTP tego nie
+     widzi, więc odwrócenie nie wymaga DOKUS-a. Testy
+     `tests/unit/test_classification_prompt.py`: surowe `id` (np. `"db-7781"`) nie występują
+     w żadnym prompcie, `OPT-00` obecna z opisem, puste przykłady pominięte, `enum` = dokładnie
+     etykiety opcji + `OPT-00`, uzasadnienie jest w schemacie przed etykietą.
+
+   - [ ] **Krok 6. Parser odpowiedzi — `api/app/classification/parsing.py`.**
+     *Decyzje:*
+     - [ ] (a) Tolerancja zapisu, gdy zaplecze nie egzekwuje schematu: JSON opakowany w blok kodu
+       markdown, tekst wokół JSON-a, `opt-3` / ` OPT-3 ` — akceptować czy uznać za odpowiedź
+       niepoprawną.
+
+     *Zrobić:* surowa odpowiedź → uzasadnienie + etykieta; niepoprawny JSON (także ucięty przez
+     `max_tokens`), brak któregoś z pól albo zły typ → `InvalidModelResponseError` z przyczyną. Testy
+     `tests/unit/test_classification_parsing.py`: poprawny, `OPT-00`, śmieci, JSON ucięty w środku
+     uzasadnienia, brak etykiety, brak uzasadnienia, zły typ pola.
+
+   - [ ] **Krok 7. `ClassificationService` — `api/app/classification/service.py`.**
+     *Decyzje:*
+     - [ ] (a) `max_tokens`: dokładna wartość z pomiaru realnych odpowiedzi z uzasadnieniem (punkt
+       wyjścia ok. 200; zapas tak, by JSON się nie urywał — `usage.completion_tokens`
+       na Bieliku i OpenAI); stała w kodzie czy ENV.
+
+     *Zrobić:* wynik domenowy `ClassificationResult` (`outcome`, wybrane `id` / `None`, etykieta,
+     uzasadnienie, przyczyna błędu, model, `usage`, prompt systemowy, prompt użytkownika, surowa
+     odpowiedź). **Spójność pól z `outcome` (tabela z kroku 1 (f)) zapewnia serwis przy składaniu
+     wyniku** — np. trzy konstruktory wyniku (`matched` / `no_match` / `invalid`), każdy przyjmuje
+     tylko pola swojego wariantu; model odpowiedzi HTTP tego nie waliduje (krok 8). Konstruktor
+     serwisu bierze `max_prompt_chars` (z `Settings.llm_max_input_chars`, krok 1 (g)).
+     Flow: `OptionLabeler` → prompty i schemat → **budżet** (`len(system) + len(user) >
+     max_prompt_chars` → `PromptTooLongError` z obiema liczbami, model niewołany) →
+     `complete(system, user, json_schema, max_tokens, temperature=0, timeout)` (jedyne I/O; błędy LLM
+     propagują) → parser → etykieta na `id`. `InvalidModelResponseError` (parser) i `UnknownLabelError`
+     (etykieta) serwis łapie i zamienia na wynik `invalid_response` z przyczyną — **nie** propagują
+     (krok 1 (f)). Log bez treści pisma:
+     `outcome` i etykieta, a przy `invalid_response` WARNING z przyczyną (inaczej porażka ginie za
+     `-> 200`). Testy `tests/unit/test_classification_service.py` z atrapą `LLMClient` nagrywającą
+     argumenty: przekazane `temperature=0`, `max_tokens`, schemat i timeout; `OPT-n` → `matched`
+     z `id` n-tej opcji; `OPT-00` → `no_match` z `None`; śmieci, urwany JSON i etykieta spoza listy →
+     `invalid_response` z przyczyną, promptami i surową odpowiedzią, `rationale` = `None`; `LLMError`
+     propaguje; prompt o znak ponad budżet → `PromptTooLongError` i zero wywołań atrapy, prompt
+     równy budżetowi → wywołanie.
+
+   - [ ] **Krok 8. Modele API — `api/app/models.py`** (odrębne od domenowych, mapowanie `from_result`).
+     Modele kontraktu powstały zaraz po zamrożeniu (przed krokami 2–7), bo nie zależą od domeny;
+     do kroku 7 czeka tylko mapowanie.
+     *Zrobić:*
+     - [x] Modele kontraktu (2026-09-16), sekcja „Klasyfikacja" w `models.py`. **Walidacja świadomie
+       minimalna — tylko struktura** (tak jak `SummarizeRequest` / `ExtractRequest`, które nie mają
+       walidatorów):
+       - `ClassifyOption` — `id: StrictInt | StrictStr` (alias `OptionId`; strict, bo bez tego `true`
+         → 1, `21.0` → 21 i odesłalibyśmy inny klucz), `name: str`, `description: str`,
+         `examples: str | None`;
+       - `ClassifyRequest` — `min_length=1` na `summaries` i `options` (pusta lista opcji → 422 to
+         wymóg zgłoszenia); limitów długości tu **nie** ma — budżet promptu sprawdza serwis, krok 1 (g);
+       - `ClassifyResponse` — `outcome` jako `Literal` (trzy wartości w OpenAPI), `metadata` jako
+         `ClassifyMetadata(model, usage: LLMUsage)`; bez walidatora spójności.
+
+       **Świadomie usunięte (pierwsza wersja miała je, 40 testów → 16):**
+       - niepuste `name` / `description` / elementy `summaries` — opcja bez treści nie psuje wyniku
+         (model jej nie wybierze), a 422 wywracałoby całe wywołanie dla grupy przez jedną lukę
+         w katalogu; kompletność katalogu i odsiew dokumentów bez streszczeń to strona DOKUS-a (README);
+       - powtórzone `id` — etykiety rozwiązujemy po pozycji, więc duplikat nie psuje mapowania
+         (wcześniejszy argument „mapowanie niejednoznaczne" był błędny);
+       - walidator spójności `option_id` / `rationale` / `error` z `outcome` — obrona przed własnym
+         błędem w miejscu, gdzie go nie popełniamy; `ClassifyResponse` buduje wyłącznie
+         `from_result`, a spójność wynika z konstrukcji wyniku w serwisie (krok 7) i jego testów.
+
+       Testy (16): `tests/unit/test_models_classify_request.py` (przykład z README, typ `id`
+       zachowany, brak / pusta lista, brak wymaganego pola opcji, `id` bez koercji)
+       i `tests/unit/test_models_classify_response.py` (nazwy pól = kontrakt, `option_id` string
+       w JSON, nieznany `outcome`).
+     - [ ] `ClassifyResponse.from_result(ClassificationResult)` — po kroku 7 (wymaga wyniku
+       domenowego) + test mapowania trzech wyników.
+
+   - [ ] **Krok 9. Router — `api/app/routers/classify.py` + `app.include_router` w `main.py`.**
+     *Zrobić:* DI jak w `/summarize` (`_get_classification_service`, klient z `get_llm_client()`,
+     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`); mapowanie:
+     `PromptTooLongError` → 413, `LLMAuthError` → 500, `LLMResponseError` / `LLMError` → 502,
+     `LLMRateLimitError` → 503, `LLMTimeoutError` → 504 — wszystkie przez `HTTPException` jak dziś
+     (bez promptów w ciele). Odpowiedź niepoprawna to zwykłe `200` (krok 1 (f)), router nie ma dla
+     niej osobnej ścieżki. Docstring modułu `main.py` (lista endpointów). Testy
+     `tests/unit/test_fastapi_classify.py` (wzorzec `test_fastapi_summarize.py`, atrapa serwisu
+     przez `dependency_overrides`): 200 `matched`, 200 `no_match`, 200 `invalid_response` (prompty,
+     surowa odpowiedź i `error` obecne), 413, 422, 500 / 502 / 503 / 504 z `detail` tekstem,
+     `X-Request-ID`.
+
+   - [ ] **Krok 10. Testy integracyjne.**
+     *Decyzje:*
+     - [ ] (a) Materiał: syntetyczny mini-katalog opcji + pisma z `samples/summarization/` (w repo)
+       czy realny katalog grup i stanowisk od DOKUS-a (dane urzędu → poza repo, jak `sample_01.pdf`).
+
+     *Zrobić:* `tests/integration/test_fastapi_classify.py` (`integration` + `integration_fastapi`):
+     kontrakt end-to-end na `fake`. `tests/integration/test_classification_service.py` (`integration`
+     + `integration_llm`): oczywiste dopasowanie → właściwe `id`; **osobny test siatki
+     bezpieczeństwa: dokument spoza wszystkich opcji → `null`**.
+
+   - [ ] **Krok 11. Sprawdzian ręczny na realnym modelu** (Bielik 11B przez Ollamę i OpenAI; ocena
+     systematyczna świadomie później).
+     *Zrobić:* kilka przypadków na obu szczeblach (grupa, potem stanowisko), w tym dokumenty spoza
+     wszystkich opcji; dwa niezależne przebiegi; czytać surowe odpowiedzi, nie tylko wynik (pułapki
+     metodologii z pkt 9); przy długiej liście opcji sprawdzić `usage.prompt_tokens` pod kątem
+     sufitu `num_ctx`; potwierdzić, że schemat jest egzekwowany na każdym zapleczu; sprawdzić, czy
+     uzasadnienie pisane przed etykietą nie „przegaduje" modelu do opcji tam, gdzie należało wybrać
+     `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
+
+   - [ ] **Krok 12. Dokumentacja.**
+     *Zrobić:* README — nowe ENV w „Konfiguracji", szybki sprawdzian `curl` na `/classify`;
+     `LLM_MAX_INPUT_CHARS` w tabeli „Limity i jakość ekstrakcji" oraz komentarze w `.env.example`
+     i `config.py` — nowe znaczenie „okno modelu w znakach" (`/summarize` przycina, `/classify`
+     odrzuca 413); **wyraźne ostrzeżenie**: przy domyślnym `num_ctx` Ollamy (4096 ≈ 8 500 znaków)
+     domyślne 90 000 nie chroni klasyfikacji — obniżyć albo podnieść `OLLAMA_CONTEXT_LENGTH`
+     (procedura Bielika). CLAUDE.md — cel i przepływ danych (dochodzi klasyfikacja), „Limity — trzy
+     bramki" (bramka `/classify` = odrzucenie, nie truncacja);
+     sekcja `fastapi`: `ClassificationService` z jednostkami (etykiety / prompt / parser),
+     rozszerzenie `LLMClient` (`json_schema`, `timeout`) i trwałe decyzje z kroków 1–7; ten punkt
+     TODO zwinąć do tego, co zostaje.
+
+   - [ ] **Krok 13. Klient PHP `integrations/php/DocAiClient.php`.**
+     *Decyzje:*
+     - [ ] (a) Dokładamy `classify()` + DTO wyniku czy nie. Według zgłoszenia DOKUS (PHP 7.4) ma
+       własnego klienta `Dokus\AiUke\Client\Client`, a nasz wymaga PHP 8.1+, więc w tej integracji
+       nie jest używany.
+
+     *Zrobić:* urealnić sekcję „Klient PHP" w README i CLAUDE.md (kto faktycznie z niego korzysta);
+     jeśli (a) = tak — metoda i DTO z polem `outcome` (krok 1 (f)).
+
+   - [ ] **Krok 14. Wniosek o brakach streszczeń** (prompt streszczeń zostaje bez zmian).
+     *Zrobić:* na materiale z kroku 11 ustalić, czy wybór bywa nierozstrzygalny przez to, czego
+     streszczenie nie zawiera; jeśli tak — wniosek z uzasadnieniem i przykładami (prompty + surowe
+     odpowiedzi). Punkt wyjścia: pkt 9 — adresata brakuje w 19/20 streszczeń golden setu.
+
+2. **Limit stron PDF tnie PRZED decyzją o OCR — koniec długiego PDF-a i pełny `text` giną.**
    `PdfPageLimiter` bierze pierwsze `MAX_OCR_PAGES` stron, zanim plik trafi do Tiki (strategia (B)
    „limit PRZED auto"), a o OCR decyduje dopiero Tika wewnątrz żądania (`ocrStrategy=auto`, per
    strona; nasz PUA-fallback jeszcze później). Limit pomyślany jako ochrona przed kosztem OCR tnie
@@ -259,8 +499,8 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    - **wyższe `MAX_OCR_PAGES`**: tylko przesuwa próg, wydłuża OCR, ryzyko timeoutu Tiki.
 
    Pełny tekst długich **skanów** pod wyszukiwarkę wymaga przetworzenia wszystkich stron → kolejka
-   (pkt 7).
-2. **Niespójny kształt błędów — ten sam `422` raz z `detail`-tekstem, raz z `detail`-tablicą.**
+   (pkt 8).
+3. **Niespójny kształt błędów — ten sam `422` raz z `detail`-tekstem, raz z `detail`-tablicą.**
    Nasze `HTTPException` oddają `detail` jako **tekst**; walidacja żądania (domyślny handler FastAPI,
    do którego deleguje `log_validation_error`) oddaje **listę** błędów pydantic. Dla 413/5xx kształt
    jest stały, ale **422 ma oba**: tablica przy walidacji (brak pola, zły typ, proporcje trunkacji),
@@ -277,7 +517,7 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    **świadome złamanie** zasady „handlery nie zmieniają odpowiedzi" (sekcja `fastapi` wyżej). Tanio,
    póki konsument jest jeden, a jego klient PHP obsługuje już oba kształty. Pełne RFC 9457
    (`application/problem+json` dla wszystkich błędów) rozważone — większe niż potrzeba.
-3. **Cicha częściowa ekstrakcja — Tika zwraca `200` z urwanym tekstem.** Gdy parser wywróci się
+4. **Cicha częściowa ekstrakcja — Tika zwraca `200` z urwanym tekstem.** Gdy parser wywróci się
    w środku pliku, Tika oddaje treść sprzed miejsca awarii, a błąd zapisuje **wyłącznie w metadanych**
    (`X-TIKA:EXCEPTION:container_exception`). `TikaClient`/`ExtractionService` kluczy
    `X-TIKA:EXCEPTION:*` **nie czytają** → niepełny tekst idzie do LLM bez flagi i bez logu, a
@@ -288,27 +528,27 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    pogrubienia funkcję JS zamiast wartości (52× `<w:b w:val="function bold() { [native code] }"/>`) →
    Apache POI pada na tabeli, tekst urywa się tuż przed nią (brak pozycji, sumy 9 094,62 zł, kwoty
    słownie, uwag i podpisu). Wadliwy tylko ten plik (jedyny z tabelą) — **do naprawy**. **Skutek dla
-   ewaluacji (pkt 8):** przykład „wartość faktury ginie" to najpewniej artefakt ekstrakcji, nie wada
+   ewaluacji (pkt 9):** przykład „wartość faktury ginie" to najpewniej artefakt ekstrakcji, nie wada
    modelu — przez pipeline model tej kwoty w ogóle nie dostaje (cena oferty i wynagrodzenie
    z zaświadczenia pozostają ważne).
-4. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
+5. **[BLOKER] Uwierzytelnianie / autoryzacja API.** Kanał DOKUS↔FastAPI jest dziś otwarty —
    dla pism urzędowych twardy warunek wdrożenia. Do zrobienia przed resztą.
-5. **Audyt plumbingu configu — częściowo zrobione.** Spójności `.env.example` ↔ compose
+6. **Audyt plumbingu configu — częściowo zrobione.** Spójności `.env.example` ↔ compose
    `environment` ↔ `Settings` pilnuje `tests/unit/test_config_plumbing.py` (cztery niezmienniki,
    parsuje pliki jako dane — bez Dockera). Złapał już dwa realne rozjazdy: `LLM_API_VERSION`
    wstrzykiwany w próżnię (usunięty) i `OLLAMA_PORT` poza szablonem. **Zostaje**: weryfikacja, że
    pokrętło realnie *działa* w runtime (test sprawdza przepływ nazw, nie zachowanie) — np.
    nieprzekazany kiedyś `LLM_TIMEOUT_SECONDS` dziś zostałby złapany, ale zły typ/jednostka nie.
-6. **Truncacja długich pism = ryzyko jakości — częściowo zrobione.** Końcówka pisma (termin,
+7. **Truncacja długich pism = ryzyko jakości — częściowo zrobione.** Końcówka pisma (termin,
    podpis, rygor) już dociera do modelu: cięcie początek / środek / koniec (`TextTruncator`) zamiast
    samego początku. **Zostaje:** środek dokumentu poza jednym fragmentem wciąż ginie (decyzja
    chunking/map-reduce vs świadomy limit nadal otwarta), a dla PDF-ów ponad `MAX_OCR_PAGES`
-   cięcie działa na tekście już uciętym stronami (pkt 1).
+   cięcie działa na tekście już uciętym stronami (pkt 2).
    **Rozjazd bramek jest realny:** `MAX_OCR_PAGES=30` przepuszcza ~90 000 znaków ≈ 33 000 tokenów
    — nie mieści się w ŻADNYM oknie Bielika 11B (max 32 768, a i to z przelewem VRAM).
-7. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
+8. **Async / kolejka pod wolumen.** Pipeline jest synchroniczny i blokujący (OCR+LLM sekwencyjnie,
    rzędu minut/dokument nawet na GPU). Przy realnym ruchu ESOD potrzebna kolejka (np. RabbitMQ).
-8. **Ewaluacja jakości streszczeń — pierwszy pomiar JEST, automatu (harnessu) wciąż brak.** To serce
+9. **Ewaluacja jakości streszczeń — pierwszy pomiar JEST, automatu (harnessu) wciąż brak.** To serce
    produktu; mierzyć, nie „na oko". Powstał **golden set 20 syntetycznych pism** w
    `samples/summarization/` (`01_…`–`20_….docx`) — syntetyczne, więc świadomie **poza `.gitignore`**,
    trzymane w repo (stary `samples/*`-ignore i README świadomie skasowane — `samples/` **nie jest już
@@ -352,7 +592,7 @@ Luki „ostatniej mili" (system dla urzędu). Kolejność wg wagi:
    w Ollamie — powtórzenia w jednej sesji próbkują ten sam bufor prefiksu, więc mierzą zero, a ta
    sama komórka potrafi dać `3/3` i `0/3` w dwóch przebiegach. Stąd wymóg: **dwa niezależne
    przebiegi** i **zawsze czytać surowe odpowiedzi**, nie tylko licznik.
-9. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
+10. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
    źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
 
 ## Świadomie pominięte (NIE dodawać bez pytania)
