@@ -1,0 +1,3 @@
+# Teksty promptow: zawsze LF. Model dostaje bajty pliku, wiec CRLF z checkoutu na Windows
+# (core.autocrlf) zmienilby prompt po cichu — `PromptTemplate` zdejmuje tylko koncowe `\n`.
+api/app/prompt/*.md text eol=lf

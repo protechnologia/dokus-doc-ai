@@ -1,0 +1,3 @@
+Streść poniższy dokument:
+
+{{text}}

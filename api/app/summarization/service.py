@@ -2,14 +2,15 @@
 
 Warstwa DOMENOWA: niezalezna od tego, ktory dostawca LLM stoi pod spodem (analogia do
 `ExtractionService` nad `TikaClient`). Transport/generacje (`LLMClient`, krok 2.2) dostaje
-wstrzyknieta — rozmawia z nia tylko przez `complete`. To TU mieszka wiedza o promptach:
-system prompt po polsku + szablon usera + truncacja wejscia pod okno modelu.
+wstrzyknieta — rozmawia z nia tylko przez `complete`. Tu: truncacja wejscia pod okno modelu
++ wywolanie; prompty skladaja `SummarySystemPrompt` / `SummaryUserPrompt` (`prompt_system.py` /
+`prompt_user.py`) z tekstow w `app/prompt/`.
 
 Format streszczenia (decyzja produktowa, 2.4; zrewidowana 2026-07-08): WYPUNKTOWANIE
 kluczowych pol (typ pisma, nadawca, czego dotyczy, termin, akcja) jako JEDEN string
-`summary` (bez JSON/parsowania). System prompt nizej narzuca ten format. Akapit
+`summary` (bez JSON/parsowania). Prompt systemowy narzuca ten format. Akapit
 otwierajacy byl w pierwotnym zamysle, ale model go nie oddaje bez protez — patrz macierz
-pomiarow przy `_SYSTEM_PROMPT`.
+pomiarow w `SummarySystemPrompt`.
 
 Truncacja (truncacja POD OKNO MODELU — co innego niz limit stron ekstrakcji z 2.3.5):
 w znakach (`max_input_chars`), POCZATEK / SRODEK / KONIEC w proporcjach z zadania, ze
@@ -19,7 +20,7 @@ znacznikami pominiecia (`TextTruncator`, osobny czysty modul `truncation.py`) + 
 "Spojnosc limitow pipeline'u").
 
 Struktura (jak w `ExtractionService`): czyste fragmenty bez I/O (truncacja w `TextTruncator`,
-budowa wiadomosci, metadane) osobno; w async `summarize` zostaje samo wywolanie `LLMClient` +
+prompty w klasach promptow, metadane) osobno; w async `summarize` zostaje samo wywolanie `LLMClient` +
 zlozenie wyniku. Wyjatki LLM (`LLMError`...) NIE sa tu lapane — propaguja do endpointu, ktory
 mapuje je na HTTP (krok 2.4.2).
 """
@@ -31,52 +32,17 @@ import logging
 from pydantic import BaseModel, Field
 
 from app.llm import LLMClient, LLMResult, LLMUsage
+from app.summarization.prompt_system import SummarySystemPrompt
+from app.summarization.prompt_user import SummaryUserPrompt
 from app.summarization.truncation import DEFAULT_HEAD_PERCENT, DEFAULT_TAIL_PERCENT, TextPart, TextParts, TextTruncator, TruncationResult
 
 logger = logging.getLogger(__name__)
 
-# --- Prompt (LOGIKA, nie sekret -> w kodzie, nie w ENV; nie zmienia sie przy zmianie dostawcy) ---
-
-# System prompt po polsku: rola pod dekretacje + format = SAMO WYPUNKTOWANIE (bez akapitu).
-#
-# BRAK AKAPITU OTWIERAJACEGO JEST DECYZJA, NIE NIEDOPATRZENIEM. Model nasladuje najbardziej
-# konkretny wzorzec obecny w prompcie; lista pol jest konkretna, "napisz akapit" to tylko opis.
-# Zmierzone na Bieliku 11B (2026-07-08, temperature=0, szesc pism, po dwa niezalezne przebiegi):
-#
-#   wariant promptu                              | akapit  | punkty "• " | stabilnosc
-#   ---------------------------------------------|---------|-------------|------------
-#   opis "1./2." (numeracja przecieka do wyjscia)| lista   | 2 z 3       | —
-#   opis bez numeracji, bez przykladu            | ZNIKA   | 3 z 6       | stabilnie zle
-#   opis + przyklad wklejony w system            | 3 z 6   | 6 z 6       | chwiejna
-#   opis + przyklad + jawny zakaz "nie zaczynaj •"| 5 z 6  | 6 z 6       | stabilna
-#   markdown (## Rola / ## Format) bez przykladu | 0 z 6   | 6 z 6       | stabilnie zle
-#   przyklad jako TURA `assistant` (few-shot)    | 6 z 6   | 6 z 6       | stabilna
-#   SAMO WYPUNKTOWANIE (ten prompt)              |   —     | 6 z 6       | 18/18, dwa przebiegi
-#
-# Wniosek: akapit dawal sie wymusic tylko przykladem (i to najpewniej dopiero jako tura
-# `assistant`, co wymaga zmiany interfejsu `LLMClient`). Zamiast placic zakazami i few-shotem
-# za forme, ktorej model nie chce — rezygnujemy z akapitu. Prompt krotszy o ~130 tokenow,
-# format stabilny bez zadnych protez.
-#
-# UWAGA: pomiar sprawdzal WYLACZNIE format. Tresc ma znane wady (patrz TODO nr 5 w CLAUDE.md):
-# model wypelnia pole, ktorego w pismie nie ma ("Oczekiwana akcja: potwierdzenie obecnosci"
-# przy zwyklym przypomnieniu) i myli semantyke pol (podstawa prawna w "Termin / data").
-_SYSTEM_PROMPT = (
-    "Jesteś asystentem przygotowującym zwięzłe streszczenia pism dla osoby dekretującej "
-    "dokumenty w urzędzie. Streść dokument tak, by osoba dekretująca od razu wiedziała, "
-    "czego pismo dotyczy i co należy z nim zrobić.\n\n"
-    "Odpowiadaj WYŁĄCZNIE po polsku. Odpowiedź to wypunktowanie — każdy element w osobnej "
-    "linii zaczynającej się od „• ”, TYLKO te, które faktycznie występują w dokumencie:\n"
-    "   • Typ pisma\n"
-    "   • Nadawca\n"
-    "   • Czego dotyczy\n"
-    "   • Termin / data\n"
-    "   • Oczekiwana akcja\n\n"
-    "Pomijaj punkty, których w dokumencie nie ma — niczego nie zmyślaj. Bądź rzeczowy i krótki."
-)
-
-# Szablon wiadomosci usera: ramka + tresc dokumentu (system trzyma instrukcje formatu).
-_USER_TEMPLATE = "Streść poniższy dokument:\n\n{text}"
+# --- Prompty (teksty w app/prompt/*.md; wczytane raz, przy imporcie) ---------------
+# Brak pliku albo rozjazd placeholderów wywala import serwisu, czyli start aplikacji —
+# nie pierwsze żądanie. Uzasadnienie treści (pomiary formatu): `SummarySystemPrompt`.
+_SYSTEM_PROMPT = SummarySystemPrompt()
+_USER_PROMPT   = SummaryUserPrompt()
 
 
 # --- Wynik domenowy summaryzacji -------------------------------------------------
@@ -121,7 +87,7 @@ class SummarizationService:
 
     Do czego:
         Zamienia surowy tekst dokumentu na `SummarizationResult` (streszczenie + metadane):
-        składa prompt (system + szablon usera), pilnuje truncacji wejścia pod okno modelu
+        składa prompty (`SummarySystemPrompt` + `SummaryUserPrompt`), pilnuje truncacji wejścia pod okno modelu
         (początek / środek / koniec przez `TextTruncator`), woła `LLMClient.complete`. Nie wie
         i nie ma wiedzieć, który dostawca odpowiada — dostaje go wstrzykniętego z fabryki
         (`get_llm_client()`), bo LLM jest wymienialny.
@@ -129,7 +95,7 @@ class SummarizationService:
     Flow jednego `summarize(...)`:
         1. strip + pusto -> `EmptyInputError`,
         2. `TextTruncator.apply` -> tekst pod limit + zakresy części (log, gdy cięto),
-        3. `LLMClient.complete` (system + user) -> `LLMResult` (jedyne I/O; błędy LLM propagują),
+        3. `LLMClient.complete` (system + user z klas promptów) -> `LLMResult` (jedyne I/O; błędy LLM propagują),
         4. `_leading_whitespace_len` + `_build_metadata` -> `SummarizationResult` (offsety
            przesunięte na tekst klienta przez `_shift_parts`).
     """
@@ -203,22 +169,6 @@ class SummarizationService:
             for p in (parts.head, parts.middle, parts.tail)
         )
         return TextParts(head=head, middle=middle, tail=tail)
-
-    @staticmethod
-    def _build_user_message(
-        text: str,   # (już przycięta) treść dokumentu
-    ) -> str:
-        """Opis metody:
-        Zbuduj wiadomość usera z szablonu (ramka + dokument). System prompt trzyma format.
-        Czysta funkcja.
-
-        Przyklad argumentow:
-            text="Pismo w sprawie podatku..."
-
-        Przyklad wyniku:
-            "Streść poniższy dokument:\\n\\nPismo w sprawie podatku..."
-        """
-        return _USER_TEMPLATE.format(text=text)
 
     @classmethod
     def _build_metadata(
@@ -294,8 +244,8 @@ class SummarizationService:
 
         # Jedyne I/O: generacja przez wstrzyknięty klient. Błędy LLM propagują do endpointu.
         result = await self._client.complete(
-            user        = self._build_user_message(cut.text),
-            system      = _SYSTEM_PROMPT,
+            user        = _USER_PROMPT.render(text=cut.text),
+            system      = _SYSTEM_PROMPT.render(),
             max_tokens  = self._max_output_tokens,
             temperature = 0.0,   # streszczenia stabilne/powtarzalne
         )

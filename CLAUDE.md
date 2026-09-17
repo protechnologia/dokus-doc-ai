@@ -102,11 +102,12 @@ ustalić z logów bez dostępu do klienta.
       na już uciętym pliku. `ocr_used` z `pdf:ocrPageCount > 0`.
   - `SummarizationService` — składa **prompt PL** (rola: streszczenie pisma pod dekretację;
     **samo wypunktowanie** pięciu pól obecnych w piśmie, bez zmyślania; jako jeden string
-    `summary`). Prompt = logika → w kodzie (`_SYSTEM_PROMPT`), nie w ENV. **Akapitu otwierającego
+    `summary`). Prompt = logika → w repo i obrazie, nie w ENV (`SummarySystemPrompt` /
+    `SummaryUserPrompt`, patrz „Prompty" niżej). **Akapitu otwierającego
     świadomie NIE ma**: model naśladuje najbardziej konkretny wzorzec w prompcie (lista pól), a
     „napisz akapit" to tylko opis — dawał się wymusić wyłącznie przykładem, i to najpewniej dopiero
     jako tura `assistant` (zmiana interfejsu `LLMClient`). Macierz siedmiu wariantów × sześć pism ×
-    dwa przebiegi: komentarz przy prompcie. Strażniki: `tests/unit/test_summarization_service.py`
+    dwa przebiegi: komentarz w `app/prompt/summary_system.md`. Strażniki: `tests/unit/test_summarization_prompt_system.py`
     (pięć pól, zero numeracji w opisie, żadnej obietnicy akapitu).
     Pusty tekst → `EmptyInputError`. Truncację wejścia do `LLM_MAX_INPUT_CHARS` (w **znakach**,
     nie chunking) robi osobna czysta jednostka:
@@ -130,6 +131,33 @@ ustalić z logów bez dostępu do klienta.
     z zagnieżdżonymi metadanymi obu etapów.
 - **DI (kontrast):** `ExtractionService` dostaje `TikaClient` **inline** (jeden silnik);
   `SummarizationService`/`PipelineService` biorą `LLMClient` z **fabryki** (silnik wymienialny).
+
+**Prompty — teksty w `app/prompt/`, klasy w domenach** (2026-09-17). Tekst promptu to plik
+`app/prompt/<domena>_<rola>.md`; klasa, która go wypełnia, leży w pakiecie domeny — **plik na
+prompt** (`summarization/prompt_system.py`, `prompt_user.py`), dziedziczy `PromptTemplate`
+(`app/prompt/template.py`), deklaruje `FILE`, placeholdery jako stałe z komentarzem i własne
+`render(...)` z jawnymi argumentami — i **zwraca w pełni gotowy prompt** (formatowanie danych, np.
+listy opcji, też w klasie, nie w serwisie). Serwis tworzy instancje przy imporcie → brak pliku /
+rozjazd placeholderów / zły komentarz wywala start.
+- **`.md` = surowy tekst**: model dostaje bajty pliku, nie wyrenderowany Markdown — każda
+  „kosmetyka" (wcięcia, `##`, pogrubienia) to zmiana promptu, a forma promptu przechodzi na wyjście
+  (macierz w `summary_system.md`). LF wymusza `.gitattributes`; `\n` na brzegach zdejmowane.
+- **Uzasadnienie treści w pliku, jako komentarz `<!-- … -->`** — obok tekstu, którego dotyczy;
+  wycinany przy wczytaniu, przed sprawdzeniem placeholderów. Zwięźle: decyzja + dowód, bez eseju.
+  Komentarz zajmuje **całe linie** i znika razem z nimi (puste linie wokół zostają → w środku
+  tekstu przyklejać do akapitu); w linii z tekstem / niedomknięty / z `-->` w treści → błąd, nie
+  wycinanie „na oko". Wycinamy tylko z szablonu — `<!--` w treści pisma przechodzi nietknięte.
+- **Placeholder `{{nazwa}}`, stała = pełny token** (`TEXT = "{{text}}"`, wyszukanie trafia w plik
+  i klasę; stała bez klamer nie zgodzi się z plikiem → błąd startu). Nie `str.format` (wywraca się
+  na `{` w tekście); podstawienie **jednym przebiegiem** (`re.sub` z funkcją) — `{{…}}` w treści
+  pisma zostaje dosłownie, a kolejne `replace` przeszukałyby wynik poprzedniego. Zbiór tokenów
+  w pliku = `PLACEHOLDERS`.
+- **Dlaczego klasy w domenach, nie w `app/prompt/`:** prompt klasyfikacji formatuje typy domeny
+  (`LabeledEntry`), a serwis importuje prompt; `__init__` pakietów re-eksportuje serwisy, więc klasa
+  w `app/prompt/` dałaby cykl importów zależny od kolejności (zmierzone na makiecie). Zależności
+  w jedną stronę: domeny → `app.prompt`, nigdy odwrotnie. Odrzucone: import pod `TYPE_CHECKING`
+  (ukrywa dwukierunkową zależność), puste `__init__` (zmiana konwencji całego projektu), `Protocol`
+  na wejście promptu (drugi opis pól opcji).
 
 **Limity — trzy bramki tego samego dokumentu** (spójność ważna, README „Spójność limitów
 pipeline'u"): `MAX_UPLOAD_BYTES` (→ 413) → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS`. Rozróżnienie:

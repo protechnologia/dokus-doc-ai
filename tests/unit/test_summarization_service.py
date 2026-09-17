@@ -1,18 +1,17 @@
 """Testy jednostkowe SummarizationService (krok 2.4.1) — bez sieci.
 
-Czyste helpery (`_leading_whitespace_len`/`_shift_parts`/`_build_user_message`/`_build_metadata`)
-wołane wprost. Sam algorytm cięcia (początek / środek / koniec) testowany osobno w
-`test_summarization_truncation.py` — tu tylko to, jak serwis go używa. Orkiestracja
+Czyste helpery (`_leading_whitespace_len`/`_shift_parts`/`_build_metadata`) wołane wprost.
+Treść promptów testowana osobno w `test_summarization_prompt_system.py` / `_prompt_user.py`, a sam algorytm cięcia
+(początek / środek / koniec) w `test_summarization_truncation.py` — tu tylko to, jak serwis ich używa. Orkiestracja
 `summarize` (async) na DWÓCH atrapach: nagrywającej (sprawdza, CO leci do `LLMClient` — system
 prompt, max_tokens, user z tekstem) oraz `FakeLLMClient` (determinizm end-to-end). Brak
 pytest-asyncio -> `asyncio.run` (jak w pozostałych testach projektu).
 """
 
 import asyncio
-import re
 
 from app.llm import FakeLLMClient, LLMClient, LLMResult, LLMUsage
-from app.summarization.service import _SYSTEM_PROMPT, EmptyInputError, SummarizationService
+from app.summarization.service import EmptyInputError, SummarizationService
 from app.summarization.truncation import MARKER_RESERVE, OMISSION_MARKER, TextPart, TextParts, TruncationResult
 
 # Budżet testowy: na treść zostaje 100 znaków (proporcje w % = budżety w znakach).
@@ -53,16 +52,6 @@ def test_shift_parts_przesuwa_zakresy_i_pomija_wylaczone():
     assert SummarizationService._shift_parts(None, 3) is None
 
 
-# --- _build_user_message: ramka + dokument ---------------------------------------
-
-
-def test_build_user_message_wstawia_tekst_w_szablon():
-    """Wiadomość usera = ramka „Streść poniższy dokument:” + treść dokumentu."""
-    msg = SummarizationService._build_user_message("Pismo w sprawie podatku")
-    assert "Pismo w sprawie podatku" in msg
-    assert msg.startswith("Streść poniższy dokument:")
-
-
 # --- _build_metadata: złożenie z LLMResult ---------------------------------------
 
 
@@ -99,34 +88,6 @@ def test_summarize_przekazuje_system_prompt_i_max_tokens():
     assert call["max_tokens"] == 321
     assert call["temperature"] == 0.0
     assert "Pismo z Urzędu Skarbowego" in call["user"]   # dokument w wiadomości usera
-
-
-def test_system_prompt_zada_wypunktowania_wszystkich_pol():
-    """Kontrakt formatu: pięć pól, każde jako punkt „• ”. Bez tego streszczenie traci strukturę."""
-    for pole in ("Typ pisma", "Nadawca", "Czego dotyczy", "Termin / data", "Oczekiwana akcja"):
-        assert f"• {pole}" in _SYSTEM_PROMPT
-
-
-def test_system_prompt_nie_numeruje_wlasnego_opisu_formatu():
-    """Strażnik przed nawrotem defektu: numeracja W OPISIE formatu przecieka do WYJŚCIA.
-
-    Historyczny błąd (2026-07-08): opis brzmiał „1. streszczenie… 2. wypunktowanie…”, a Bielik
-    brał tę numerację za wzór odpowiedzi i zwracał listę `1.`–`9.` zamiast punktów. Model
-    naśladuje najbardziej konkretny wzorzec w prompcie — a numerowana lista nim jest.
-    """
-    linie = _SYSTEM_PROMPT.splitlines()
-    numerowane = [l for l in linie if re.match(r"^\s*\d+[.)]\s", l)]
-    assert not numerowane, f"opis formatu znów zawiera numerację: {numerowane}"
-
-
-def test_system_prompt_nie_obiecuje_akapitu():
-    """Akapit otwierający świadomie usunięty (patrz macierz pomiarów w service.py).
-
-    Model go nie oddaje bez przykładu jako tury `assistant`; obietnica w prompcie bez pokrycia
-    w wyjściu to gorzej niż jej brak — dokumentacja i kontrakt zaczynają kłamać.
-    """
-    assert "akapit" not in _SYSTEM_PROMPT.lower()
-    assert "streszczenie naturalnym językiem" not in _SYSTEM_PROMPT
 
 
 def test_summarize_metadane_z_oryginalnej_dlugosci_i_truncacja():

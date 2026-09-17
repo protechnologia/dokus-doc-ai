@@ -84,7 +84,8 @@ Prof. Antoni Zagubiony
 
 Streszczenie zachowuje narzucony przez prompt format: wypunktowanie kluczowych elementów pod
 dekretację, wyłącznie tych obecnych w piśmie. Akapitu otwierającego **nie ma** — świadomie
-(uzasadnienie i pomiary: `_SYSTEM_PROMPT` w [api/app/summarization/service.py](api/app/summarization/service.py)).
+(tekst promptu: [api/app/prompt/summary_system.md](api/app/prompt/summary_system.md); uzasadnienie
+i pomiary: komentarz na początku tego pliku).
 
 > Jakość **treści** nie jest dziś niczym mierzona. Model potrafi wypełnić pole, którego pismo nie
 > zawiera, albo pomylić semantykę pól (np. wpisać podstawę prawną w „Termin / data"). Patrz TODO
