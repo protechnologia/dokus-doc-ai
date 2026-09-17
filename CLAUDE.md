@@ -375,16 +375,18 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      - Znane ograniczenie: streszczenie zawierające `</streszczenia>` rozszczelnia sekcję (bez
        escapowania). Skutek ograniczony do wyboru spośród opcji z listy (`enum`).
 
-   - [ ] **Krok 6. Parser odpowiedzi — `api/app/classification/parsing.py`.**
-     *Decyzje:*
-     - [ ] (a) Tolerancja zapisu, gdy zaplecze nie egzekwuje schematu: JSON opakowany w blok kodu
-       markdown, tekst wokół JSON-a, `opt-3` / ` OPT-3 ` — akceptować czy uznać za odpowiedź
-       niepoprawną.
-
-     *Zrobić:* surowa odpowiedź → uzasadnienie + etykieta; niepoprawny JSON (także ucięty przez
-     `max_tokens`), brak któregoś z pól albo zły typ → `InvalidModelResponseError` z przyczyną. Testy
-     `tests/unit/test_classification_parsing.py`: poprawny, `OPT-00`, śmieci, JSON ucięty w środku
-     uzasadnienia, brak etykiety, brak uzasadnienia, zły typ pola.
+   - [x] **Krok 6. Parser odpowiedzi — `classification/parsing.py`** (2026-09-17). `parse_response(raw)`
+     → `ParsedResponse(rationale, label)`; każda wada → `InvalidModelResponseError`, komunikat = `error`
+     odpowiedzi. Etykiety nie rozwiązuje (zwraca dosłownie, listę zna `OptionLabeler`). Z kodu nie wynika:
+     - **(a) Ściśle, bez tolerancji zapisu** — blok kodu markdown, tekst wokół JSON-a → niepoprawny
+       JSON; `opt-3` / ` OPT-3 ` odpadają na `resolve`. OpenAI i Ollama egzekwują schemat (tolerancja
+       nigdy by się tam nie uruchomiła); zaplecze gubiące schemat (Open WebUI, krok 11) wychodzi od
+       pierwszego żądania, zamiast zostać przykryte. Tolerancję dokładać na podstawie zmierzonych
+       surowych odpowiedzi, nie zgadywanych. Odrzucone: wyłuskiwanie pierwszego obiektu z tekstu (przy
+       dwóch obiektach bierze nie ten → zły wybór bez człowieka w pętli).
+     - Z tego samego powodu **powtórzony klucz → błąd** (`json.loads` po cichu bierze ostatni).
+     - **Struktura, nie treść** (jak model API): pola nadmiarowe ignorowane, puste uzasadnienie przyjęte.
+       Pusta odpowiedź (odmowa / filtr → `""`) ma własną przyczynę zamiast mylącego „Expecting value".
 
    - [ ] **Krok 7. `ClassificationService` — `api/app/classification/service.py`.**
      *Decyzje:*
@@ -402,9 +404,9 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      Flow: `OptionLabeler` → prompty i schemat → **budżet** (`len(system) + len(user) >
      max_prompt_chars` → `PromptTooLongError` z obiema liczbami, model niewołany) →
      `complete(system, user, json_schema, max_tokens, temperature=0)` (jedyne I/O; błędy LLM
-     propagują) → parser → etykieta na `id`. `InvalidModelResponseError` (parser) i `UnknownLabelError`
-     (etykieta) serwis łapie i zamienia na wynik `invalid_response` z przyczyną — **nie** propagują
-     (krok 1 (f)). Log bez treści pisma:
+     propagują) → `parse_response` → `OptionLabeler.resolve` (etykieta na `id`).
+     `InvalidModelResponseError` (parser) i `UnknownLabelError` (etykieta) serwis łapie i zamienia
+     na wynik `invalid_response` z przyczyną — **nie** propagują (krok 1 (f)). Log bez treści pisma:
      `outcome` i etykieta, a przy `invalid_response` WARNING z przyczyną (inaczej porażka ginie za
      `-> 200`). Testy `tests/unit/test_classification_service.py` z atrapą `LLMClient` nagrywającą
      argumenty: przekazane `temperature=0`, `max_tokens` i schemat; `OPT-n` → `matched`
@@ -479,10 +481,11 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      wszystkich opcji; dwa niezależne przebiegi; czytać surowe odpowiedzi, nie tylko wynik (pułapki
      metodologii z pkt 9); przy długiej liście opcji sprawdzić `usage.prompt_tokens` pod kątem
      sufitu `num_ctx`; potwierdzić, że schemat jest egzekwowany na każdym zapleczu — zwłaszcza czy
-     Open WebUI `/ollama/v1` przepuszcza `response_format` (niesprawdzone w kroku 2); czy uzasadnienia
-     11B są spójne (4.5B przy poprawnym `OPT-00` napisał, że „OPT-00 również nie pasuje"); sprawdzić, czy
-     uzasadnienie pisane przed etykietą nie „przegaduje" modelu do opcji tam, gdzie należało wybrać
-     `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
+     Open WebUI `/ollama/v1` przepuszcza `response_format` (niesprawdzone w kroku 2; jeśli nie, ścisły
+     parser da `invalid_response` na każdą odpowiedź zapisaną inaczej niż gołym JSON-em — krok 6 (a));
+     czy uzasadnienia 11B są spójne (4.5B przy poprawnym `OPT-00` napisał, że „OPT-00 również nie
+     pasuje"); sprawdzić, czy uzasadnienie pisane przed etykietą nie „przegaduje" modelu do opcji tam,
+     gdzie należało wybrać `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
 
    - [ ] **Krok 12. Dokumentacja.**
      *Zrobić:* README — ewentualne nowe ENV w „Konfiguracji" (krok 7 (a)), szybki sprawdzian `curl` na `/classify`;
