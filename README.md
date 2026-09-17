@@ -157,7 +157,7 @@ Zmienne wykorzystywane przez **logikę aplikacji**:
 | `LLM_API_KEY` | — | Klucz API dla LLM (wymagany dla `openai`; `ollama` go ignoruje). |
 | `LLM_MODEL` | — | Nazwa modelu: `gpt-4o-mini`, tag Ollamy, `id` modelu z Open WebUI (wymagana dla `openai` i `ollama`). |
 | `LLM_BASE_URL` | — | Własny endpoint zgodny z API OpenAI. Ścieżka zależy od dostawcy: Ollama → `.../v1`, Open WebUI → `.../ollama/v1`. Wymagany dla `ollama`, opcjonalny dla `openai`. |
-| `LLM_TIMEOUT_SECONDS` | `60` | Timeout wołania LLM. |
+| `LLM_TIMEOUT_SECONDS` | `60` | Limit czasu wywołania LLM. Usługa nie ponawia wywołań, więc po jego przekroczeniu od razu zwraca `504`. |
 | `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` i `POST /extract-and-summarize`. Ustawienie należy dostosować do rozmiaru okna kontekstu modelu lub do optymalizacji kosztów. |
 
 ## API

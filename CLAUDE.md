@@ -82,6 +82,10 @@ ustalić z logów bez dostępu do klienta.
     `get_llm_client()` po `LLM_PROVIDER` (`fake`/`openai`/`ollama`); brak klucza/modelu/base_url →
     `LLMConfigError` (czytelny błąd od razu). Wyjątki: hierarchia `LLMError`. `temperature=0`.
     LLM **nie** jest pingowany w `/health`.
+    **Bez ponowień SDK (`max_retries=0`).** SDK `openai` domyślnie (2) po cichu ponawia timeout,
+    429 i 5xx: realny limit czasu wynosił ~3 × `LLM_TIMEOUT_SECONDS`, a DOKUS ponawiał żądania już
+    ponowione u nas. Ponawia wyłącznie konsument, więc stała w kodzie, nie ENV. Koszt: chwilowe
+    429/5xx OpenAI wracają od razu jako 503/502. Strażnik: `tests/unit/test_llm_openai_transport.py`.
 - **Domena** — niezależna od silnika pod spodem:
   - `ExtractionService` — normalizacja + metadane (MIME, długość; **język wyłącznie z
     `dc:language`** — nasza Tika NIE auto-wykrywa, brak → `None`); pusty wynik →
@@ -292,20 +296,14 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      - `fake` przy schemacie wybiera **pierwszą** wartość `enum` — wynik na `fake` zależy od pozycji
        `OPT-00` (krok 4 (b), krok 10).
 
-   - [ ] **Krok 3. Limit czasu klasyfikacji.** Dziś jeden `LLM_TIMEOUT_SECONDS` jest wpieczony
-     w klienta z fabryki (`lru_cache`), a przy CPU / Open WebUI podnosi się go do minut pod streszczenia.
-     *Decyzje:*
-     - [ ] (a) Czy osobny limit w ogóle (wspólny wystarcza, jeśli produkcja stoi na GPU z domyślnymi
-       60 s), a jeśli tak — parametr `timeout` w `complete()` czy osobny klient z fabryki. Dane:
-       Bielik 4.5B na CPU liczył 39–59 s na pismo przy krótkiej liście opcji (test z kroku 2),
-       `gpt-4o-mini` 2–5 s.
-     - [ ] (b) Nazwa ENV i wartość domyślna (roboczo `LLM_CLASSIFY_TIMEOUT_SECONDS=60`).
-
-     *Zrobić (wariant „parametr"):* `timeout: float | None = None` w `complete()` (`llm/base.py`;
-     `client_openai.py` → `create(..., timeout=...)`, `None` = limit klienta; `client_fake.py`
-     ignoruje); pole w `config.py`; wpis w `.env.example` i w `environment` usługi `fastapi`
-     w `docker-compose.yml` (inaczej padnie `test_config_plumbing.py`); test domyślnej wartości
-     w `tests/unit/test_config.py`.
+   - [x] **Krok 3. Limit czasu i ponowienia** (2026-09-17). Z kodu nie wynika:
+     - **Bez osobnego limitu dla klasyfikacji — wspólny `LLM_TIMEOUT_SECONDS`.** Klasyfikacja nie trwa
+       dłużej niż streszczenie na tym samym modelu (wejście pod tym samym sufitem `LLM_MAX_INPUT_CHARS`,
+       odpowiedź ~100 tokenów zamiast ~300), więc limit dobrany pod streszczenia wystarcza. Ostrzejszy
+       dałby tylko szybsze 504, a na wolnym sprzęcie fałszywe (Bielik 4.5B na CPU: 39–59 s na pismo).
+       Parametr `timeout` w `complete()` dołożyć dopiero przy realnej potrzebie.
+     - Przy okazji wyszły **ukryte ponowienia SDK** — wyłączone (`max_retries=0`), decyzja i koszt
+       w sekcji `fastapi` (`LLMClient`).
 
    - [ ] **Krok 4. Etykiety opcji — `api/app/classification/labels.py`** (nowy pakiet
      `classification`, eksporty w `__init__.py` jak w `summarization`).
@@ -369,13 +367,13 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      serwisu bierze `max_prompt_chars` (z `Settings.llm_max_input_chars`, krok 1 (g)).
      Flow: `OptionLabeler` → prompty i schemat → **budżet** (`len(system) + len(user) >
      max_prompt_chars` → `PromptTooLongError` z obiema liczbami, model niewołany) →
-     `complete(system, user, json_schema, max_tokens, temperature=0, timeout)` (jedyne I/O; błędy LLM
+     `complete(system, user, json_schema, max_tokens, temperature=0)` (jedyne I/O; błędy LLM
      propagują) → parser → etykieta na `id`. `InvalidModelResponseError` (parser) i `UnknownLabelError`
      (etykieta) serwis łapie i zamienia na wynik `invalid_response` z przyczyną — **nie** propagują
      (krok 1 (f)). Log bez treści pisma:
      `outcome` i etykieta, a przy `invalid_response` WARNING z przyczyną (inaczej porażka ginie za
      `-> 200`). Testy `tests/unit/test_classification_service.py` z atrapą `LLMClient` nagrywającą
-     argumenty: przekazane `temperature=0`, `max_tokens`, schemat i timeout; `OPT-n` → `matched`
+     argumenty: przekazane `temperature=0`, `max_tokens` i schemat; `OPT-n` → `matched`
      z `id` n-tej opcji; `OPT-00` → `no_match` z `None`; śmieci, urwany JSON i etykieta spoza listy →
      `invalid_response` z przyczyną, promptami i surową odpowiedzią, `rationale` = `None`; `LLMError`
      propaguje; prompt o znak ponad budżet → `PromptTooLongError` i zero wywołań atrapy, prompt
@@ -447,7 +445,7 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
 
    - [ ] **Krok 12. Dokumentacja.**
-     *Zrobić:* README — nowe ENV w „Konfiguracji", szybki sprawdzian `curl` na `/classify`;
+     *Zrobić:* README — ewentualne nowe ENV w „Konfiguracji" (krok 7 (a)), szybki sprawdzian `curl` na `/classify`;
      `LLM_MAX_INPUT_CHARS` w tabeli „Limity i jakość ekstrakcji" oraz komentarze w `.env.example`
      i `config.py` — nowe znaczenie „okno modelu w znakach" (`/summarize` przycina, `/classify`
      odrzuca 413); **wyraźne ostrzeżenie**: przy domyślnym `num_ctx` Ollamy (4096 ≈ 8 500 znaków)
@@ -455,7 +453,7 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      (procedura Bielika). CLAUDE.md — cel i przepływ danych (dochodzi klasyfikacja), „Limity — trzy
      bramki" (bramka `/classify` = odrzucenie, nie truncacja);
      sekcja `fastapi`: `ClassificationService` z jednostkami (etykiety / prompt / parser),
-     rozszerzenie `LLMClient` (`json_schema`, `timeout`) i trwałe decyzje z kroków 1–7; ten punkt
+     rozszerzenie `LLMClient` (`json_schema`) i trwałe decyzje z kroków 1–7; ten punkt
      TODO zwinąć do tego, co zostaje.
 
    - [ ] **Krok 13. Klient PHP `integrations/php/DocAiClient.php`.**

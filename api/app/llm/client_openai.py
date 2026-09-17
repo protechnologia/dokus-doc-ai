@@ -49,7 +49,8 @@ class OpenAILLMClient(LLMClient):
         5. sukces  -> `_to_result` -> `LLMResult` (tekst + uzyty model + zuzycie tokenow).
 
     Konfiguracja (api_key / model / base_url / timeout) wstrzykiwana przez fabryke z ENV;
-    sam klient niczego nie czyta z konfiguracji globalnej.
+    sam klient niczego nie czyta z konfiguracji globalnej. Jedno wywolanie = jedna proba
+    (bez ponowien SDK), wiec `timeout` jest faktycznym limitem czasu wywolania.
     """
 
     def __init__(
@@ -58,7 +59,7 @@ class OpenAILLMClient(LLMClient):
         api_key: str,                  # klucz API, np. "sk-proj-...HNkA"
         model: str,                    # nazwa modelu, np. "gpt-4o-mini" / "gpt-4o"
         base_url: str | None = None,   # wlasny endpoint ".../v1"; None = domyslny OpenAI
-        timeout: float = 60.0,         # limit czasu wywolania [s], np. 60.0
+        timeout: float = 60.0,         # limit czasu jednej proby = calego wywolania [s], np. 60.0
     ) -> None:
         """Opis metody:
         Zbuduj klienta OpenAI (sama konfiguracja, bez polaczenia do API).
@@ -68,10 +69,13 @@ class OpenAILLMClient(LLMClient):
             model="gpt-4o-mini"
 
         Przyklad wyniku:
-            gotowy, skonfigurowany OpenAILLMClient
+            gotowy, skonfigurowany OpenAILLMClient (bez ponowien SDK)
         """
         # Jeden dlugozyjacy klient SDK na instancje (reuzywalny, trzyma pule polaczen).
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        # max_retries=0: SDK domyslnie (2) po cichu ponawia timeout, 429 i 5xx — realny limit
+        # czasu rosl do ~3 x `timeout`, a DOKUS ponawial zadania juz ponowione u nas. Usluga
+        # nie ponawia: jedna proba, blad od razu do wolajacego (ponowienia robi task DOKUS-a).
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout, max_retries=0)
         self._model = model
 
     # --- Czyste helpery (bez I/O) — testowalne jednostkowo bez sieci ----------------
