@@ -861,7 +861,7 @@ pytest                           # wszystko (usługi nieuruchomione -> ich testy
 pytest tests/unit                # tylko jednostkowe (bez usług)
 pytest -m integration_tika       # tylko Tika;    wymaga: docker compose up -d tika
 pytest -m integration_fastapi    # tylko FastAPI; wymaga: docker compose up -d fastapi
-pytest -m integration_llm        # tylko LLM;     wymaga: LLM_PROVIDER=openai + klucz (koszt!)
+pytest -m integration_llm        # tylko LLM;     wymaga: realny dostawca (openai + klucz — koszt! / ollama)
 pytest -m integration            # wszystkie testy integracyjne (parasol)
 ```
 
@@ -876,6 +876,17 @@ zależności Tiki). Gdy usługa jest niedostępna, jej testy są pomijane (skip)
 Test LLM (`integration_llm`) robi jedno minimalne wywołanie realnego dostawcy (OpenAI),
 by potwierdzić, że klucz i mapowanie odpowiedzi działają — pomijany, gdy `LLM_PROVIDER`
 nie jest `openai` lub brak klucza.
+
+Testy promptów (`integration_llm`) wysyłają do realnego modelu oczywiste przypadki.
+Klasyfikacja: dopasowanie do opcji i dokument spoza wszystkich opcji. Streszczenie: typ pisma
+i nadawca jednoznacznego wniosku. Działają na `openai` i `ollama`, pomijane przy `fake`.
+Ollama z hosta:
+
+```bash
+LLM_PROVIDER=ollama LLM_BASE_URL=http://localhost:11434/v1 \
+LLM_MODEL=SpeakLeash/bielik-4.5b-v3.0-instruct:Q8_0 LLM_TIMEOUT_SECONDS=300 \
+pytest tests/integration/test_classification_prompt.py tests/integration/test_summarization_prompt.py
+```
 
 > Adresy usług w testach integracyjnych nadpiszesz przez `TIKA_URL` (domyślnie
 > `http://localhost:9998`) i `FASTAPI_URL` (domyślnie `http://localhost:8000`).

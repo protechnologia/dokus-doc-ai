@@ -467,6 +467,11 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      kontrakt end-to-end na `fake`. `tests/integration/test_classification_service.py` (`integration`
      + `integration_llm`): oczywiste dopasowanie → właściwe `id`; **osobny test siatki
      bezpieczeństwa: dokument spoza wszystkich opcji → `null`**.
+     *Już jest (2026-09-17):* oba przypadki na poziomie promptu —
+     `tests/integration/test_classification_prompt.py` (prompty + schemat + `OptionLabeler` + realny
+     klient, `openai` i `ollama`; syntetyczny katalog z README). Po kroku 7 przenieść na serwis.
+     Pułapka: klient LLM **nowy na każdy test** — `AsyncOpenAI` wiąże pulę połączeń z pętlą zdarzeń,
+     a każdy `asyncio.run` to nowa pętla; wspólny klient wywala drugi test („Event loop is closed").
 
    - [ ] **Krok 11. Sprawdzian ręczny na realnym modelu** (Bielik 11B przez Ollamę i OpenAI; ocena
      systematyczna świadomie później).
@@ -617,6 +622,15 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
    akcji"). Dalej: **≥2 niezależne przebiegi**, **niezależny sędzia**, „złote" streszczenia jako
    odniesienie; próbka musi zawierać pismo z tabelą, jednozdaniową notatkę i pismo długie. Osobno: 4.5B
    trzyma format luźniej niż 11B.
+
+   **Do rozważenia: streszczenie z wymuszonym schematem** (jak klasyfikacja, `json_schema`). Rozwiązałoby
+   wady formatu: pola spoza listy (`additionalProperties: false`), „brak" zamiast pominięcia pola
+   (zmierzone 2026-09-17 na `gpt-4o-mini` i Bieliku 4.5B: oba wpisały „Termin / data: brak"). Koszty
+   i pułapki: kontrakt `summary` to jeden string — JSON trzeba składać do tekstu po naszej stronie
+   albo zmienić kontrakt z DOKUS-em; strict wymaga każdego pola w `required`, więc pole nieobecne
+   w piśmie musi być `null` (typ `["string", "null"]`), inaczej schemat wymusi konfabulację; gramatyka
+   może pogorszyć treść, gdy model „walczy" ze schematem (lekcja z kroku 5 — przykłady w prompcie).
+   Łączyć z rozszerzeniem pól z rekomendacji wyżej i mierzyć przed/po na golden secie.
 
    **Metodologia — pułapki zmierzone na własnej skórze (2026-07-08):** walidator formatu potrafi
    potwierdzać to, czego szukasz (`akapit=TAK`, bo `Typ pisma:` zaczyna się wielką literą); trzy
