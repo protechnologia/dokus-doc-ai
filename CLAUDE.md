@@ -293,8 +293,8 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
        się „…będzie OPT-7", a `enum` wymusił `OPT-1`). Stąd straż długości promptu (krok 1 (g)) jest
        obowiązkowa, a ścieżka nieznanej etykiety w parserze zostaje tylko dla zapleczy, które schematu
        nie egzekwują.
-     - `fake` przy schemacie wybiera **pierwszą** wartość `enum` — wynik na `fake` zależy od pozycji
-       `OPT-00` (krok 4 (b), krok 10).
+     - `fake` przy schemacie wybiera **pierwszą** wartość `enum`. Przy `OPT-00` na końcu (krok 4) to
+       `OPT-1`, więc na `fake` wychodzi `matched` z `id` pierwszej opcji (krok 10).
 
    - [x] **Krok 3. Limit czasu i ponowienia** (2026-09-17). Z kodu nie wynika:
      - **Bez osobnego limitu dla klasyfikacji — wspólny `LLM_TIMEOUT_SECONDS`.** Klasyfikacja nie trwa
@@ -305,19 +305,15 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      - Przy okazji wyszły **ukryte ponowienia SDK** — wyłączone (`max_retries=0`), decyzja i koszt
        w sekcji `fastapi` (`LLMClient`).
 
-   - [ ] **Krok 4. Etykiety opcji — `api/app/classification/labels.py`** (nowy pakiet
-     `classification`, eksporty w `__init__.py` jak w `summarization`).
-     *Decyzje:*
-     - [ ] (a) Format etykiet: `OPT-1`…`OPT-n` + `OPT-00` jak w zgłoszeniu (niespójna szerokość —
-       model może oddać `OPT-01`) czy jednolicie dwucyfrowe `OPT-01`…
-     - [ ] (b) Pozycja `OPT-00` na liście: pierwsza czy ostatnia.
-
-     *Zrobić:* czysta klasa `OptionLabeler`: nadanie etykiet w kolejności wejścia + **zawsze**
-     doklejona `OPT-00`, dokładnie raz; rozwiązanie etykiety **po pozycji** (powtórzone `id` z wejścia
-     nie psują mapowania, dlatego model ich nie waliduje — krok 8) → `id` z wejścia w oryginalnym typie,
-     `OPT-00` → `None`, etykieta nieznana → `UnknownLabelError` (**nie** `None`). Testy
-     `tests/unit/test_classification_labels.py`: kolejność, `OPT-00` zawsze i raz (także przy jednej
-     opcji), `21` zostaje int / `"21"` zostaje string, `OPT-00` → `None`, nieznana etykieta → błąd.
+   - [x] **Krok 4. Etykiety opcji — `classification/labels.py`** (2026-09-17). `OptionLabeler`
+     + domenowy `ClassificationOption` (domena nie importuje modeli API). Z kodu nie wynika:
+     - **`OPT-1`…`OPT-n` + `OPT-00`, jak w zgłoszeniu.** Odrzucone jednolite `OPT-01`…: obawa „model
+       odda `OPT-01`" nie dotyczy zapleczy z `enum`, przy ≥100 opcjach szerokość i tak rośnie, a `OPT-00`
+       wyróżnia się szerokością jako pozycja specjalna.
+     - **`OPT-00` ostatnia** — wzorzec „żadne z powyższych". Kolejność ustala wyłącznie
+       `OptionLabeler.entries`; prompt i `enum` (krok 5) ją przejmują, nie składają własnej.
+     - `resolve` dopasowuje etykietę dokładnie (`OPT-01`, `opt-1` → `UnknownLabelError`); tolerancja
+       zapisu to decyzja parsera (krok 6 (a)).
 
    - [ ] **Krok 5. Prompt — `api/app/classification/prompt.py`** (czyste funkcje; prompt to logika,
      więc w kodzie, po polsku).
@@ -413,7 +409,8 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
 
    - [ ] **Krok 9. Router — `api/app/routers/classify.py` + `app.include_router` w `main.py`.**
      *Zrobić:* DI jak w `/summarize` (`_get_classification_service`, klient z `get_llm_client()`,
-     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`); mapowanie:
+     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`); `ClassifyOption`
+     → `ClassificationOption` (domena); mapowanie błędów:
      `PromptTooLongError` → 413, `LLMAuthError` → 500, `LLMResponseError` / `LLMError` → 502,
      `LLMRateLimitError` → 503, `LLMTimeoutError` → 504 — wszystkie przez `HTTPException` jak dziś
      (bez promptów w ciele). Odpowiedź niepoprawna to zwykłe `200` (krok 1 (f)), router nie ma dla
