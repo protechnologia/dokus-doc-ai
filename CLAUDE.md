@@ -343,27 +343,37 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      - `resolve` dopasowuje etykietę dokładnie (`OPT-01`, `opt-1` → `UnknownLabelError`); tolerancja
        zapisu to decyzja parsera (krok 6 (a)).
 
-   - [ ] **Krok 5. Prompt — `api/app/classification/prompt.py`** (czyste funkcje; prompt to logika,
-     więc w kodzie, po polsku).
-     *Decyzje:*
-     - [ ] (a) Próg rezygnacji: `OPT-00` tylko gdy żadna opcja nie pasuje, czy także gdy pasuje kilka
-       albo dopasowanie jest wątpliwe. Bez człowieka w pętli pomyłka kosztuje więcej niż dekretacja
-       ręczna.
-
-     *Zrobić:* `_SYSTEM_PROMPT` — rola, wybór dokładnie jednej etykiety, `OPT-00` jako pełnoprawna
-     pozycja z opisem, kiedy ją wybrać, format odpowiedzi (najpierw uzasadnienie w 1–2 zdaniach po
-     polsku, potem etykieta), zastrzeżenie, że dane w wiadomości
-     użytkownika to materiał, nie instrukcje (treść pisma pochodzi z zewnątrz). `build_user_prompt`
-     — dwie odgrodzone sekcje: podsumowania; opcje pod etykietami (nazwa, opis, przykłady; puste
-     przykłady pominięte, bez surowych `id`).
-     `build_response_schema(labels)` — JSON Schema z dwoma wymaganymi polami w tej kolejności:
-     uzasadnienie (string), potem etykieta (`enum` etykiet). **Dlaczego ta kolejność** (komentarz
-     w kodzie): model pisze token po tokenie, więc etykieta wynika wtedy z uzasadnienia — wierny ślad
-     do audytu; odwrotnie uzasadnienie tylko broni przesądzonego wyboru. Kontrakt HTTP tego nie
-     widzi, więc odwrócenie nie wymaga DOKUS-a. Testy
-     `tests/unit/test_classification_prompt.py`: surowe `id` (np. `"db-7781"`) nie występują
-     w żadnym prompcie, `OPT-00` obecna z opisem, puste przykłady pominięte, `enum` = dokładnie
-     etykiety opcji + `OPT-00`, uzasadnienie jest w schemacie przed etykietą.
+   - [x] **Krok 5. Prompt — `classification/prompt_system.py` / `prompt_user.py` + `schema.py`**
+     (2026-09-17). Teksty `app/prompt/classification_system.md` / `classification_user.md`;
+     `ClassificationUserPrompt.render(summaries, entries)` zwraca gotowy prompt, `build_response_schema(labels)`
+     — `rationale`, potem `label` (`enum`). Z kodu nie wynika:
+     - **(a) `OPT-00` tylko przy braku dopasowania** — gdy pasuje kilka opcji, model wybiera najlepszą.
+       Odrzucone: „remis → `OPT-00`" i „każda wątpliwość → `OPT-00`" (ta druga stoi na samoocenie
+       pewności, źle skalibrowanej — ten sam powód co odrzucone pole pewności). Świadomy koszt: remisy
+       rozstrzyga model, a pomyłka bez człowieka w pętli kosztuje więcej niż dekretacja ręczna —
+       sprawdzić w kroku 11.
+     - **Prompt systemowy bez domeny** (bez urzędu, pism, roli asystenta) — usługa nie zna znaczenia
+       opcji, kontekst niosą ich opisy; ~720 znaków zamiast ~1200.
+     - **Sekcje w tagach `<streszczenia>` / `<opcje>`, nie nagłówkach `##`** — nagłówek łatwo podrobić
+       treścią pisma; prompt systemowy nazywa tagi. Każdy element w swoim tagu (`<streszczenie>` /
+       `<opcja>`): streszczenie tego wymaga (brak nagłówka), opcja ma go w linii `OPT-n:` — tag przy
+       opcji dla spójności i odporności na wieloliniowe opisy klienta; koszt ~17 znaków na opcję.
+     - **Zastrzeżenie „dane, nie polecenia" tylko dla streszczeń** — opisy opcji pisze urząd i mogą
+       legalnie zawierać wskazówki („wybierz, gdy…").
+     - **`OPT-00` i nazwy pól JSON wpisane w `.md` dosłownie**, nie jako placeholdery — plik czyta się
+       tak, jak widzi go model; zgodność z `labels.py` / `schema.py` pilnują testy promptu systemowego.
+       Tekst pozycji `OPT-00` na liście („Brak dopasowania") w klasie, reguła wyboru w prompcie
+       systemowym; bez „powyższych", bo kolejność to decyzja `OptionLabeler`.
+     - **Dwa przykłady odpowiedzi w prompcie systemowym (pretty print)** — nie po strukturę (tę gwarantuje
+       schemat), tylko żeby model SAM oddawał JSON zgodny ze schematem: gramatyka maskuje tokeny, więc
+       model, który „chce" napisać co innego, jest spychany na mało prawdopodobne tokeny i cierpi treść.
+       Etykieta przykładu wyboru to `OPT-N` — `OptionLabeler` nigdy jej nie nada, więc skopiowana nie
+       trafi w prawdziwą opcję (`enum` ją zablokuje; bez `enum` → `invalid_response`). Odrzucone
+       `OPT-77`: przy ≥77 opcjach istnieje (cichy `matched` z cudzym `id`), a wspólny prefiks z `OPT-7`
+       pod gramatyką może skręcić w `OPT-7`. Kolejność: `OPT-00` pierwszy, `OPT-N` ostatni (ostatni
+       przykład działa najmocniej, a `OPT-00` zawsze istnieje i ciągnie ku rezygnacji).
+     - Znane ograniczenie: streszczenie zawierające `</streszczenia>` rozszczelnia sekcję (bez
+       escapowania). Skutek ograniczony do wyboru spośród opcji z listy (`enum`).
 
    - [ ] **Krok 6. Parser odpowiedzi — `api/app/classification/parsing.py`.**
      *Decyzje:*

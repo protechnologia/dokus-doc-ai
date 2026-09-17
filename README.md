@@ -563,9 +563,9 @@ Wyjście (`ClassifyResponse`) — wynik, uzasadnienie, pola audytu i metadane:
   "option_id": 21,
   "rationale": "Skarga konsumenta na opłaty naliczone przez operatora telekomunikacyjnego, z wnioskiem o interwencję, odpowiada opisowi opcji.",
   "error": null,
-  "system_prompt": "Jesteś asystentem, który wybiera ...",
-  "user_prompt": "Streszczenia dokumentu: ...",
-  "raw_response": "{\"rationale\": \"Skarga konsumenta na opłaty ...\", \"option\": \"OPT-1\"}",
+  "system_prompt": "Wybierz dla dokumentu dokładnie jedną pozycję z listy. ...",
+  "user_prompt": "Streszczenia plików dokumentu (kolejność bez znaczenia): ...",
+  "raw_response": "{\"rationale\": \"Skarga konsumenta na opłaty ...\", \"label\": \"OPT-1\"}",
   "metadata": {
     "model": "gpt-4o-mini",
     "usage": {
