@@ -439,20 +439,15 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      kontrakt, `option_id` string w JSON, nieznany `outcome`, `from_result` — trzy wyniki wg tabeli
      z README, audyt i metadane dosłownie).
 
-   - [ ] **Krok 9. Router — `api/app/routers/classify.py` + `app.include_router` w `main.py`.**
-     *Zrobić:* DI jak w `/summarize` (`_get_classification_service`, klient z `get_llm_client()`,
-     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`, `max_output_tokens`
-     z `Settings.llm_max_output_tokens_classify` — przepływ w sekcji „DI" testu routera, jak w
-     `test_fastapi_summarize.py`); `ClassifyOption`
-     → `ClassificationOption` (domena); mapowanie błędów:
-     `PromptTooLongError` → 413, `LLMAuthError` → 500, `LLMResponseError` / `LLMError` → 502,
-     `LLMRateLimitError` → 503, `LLMTimeoutError` → 504 — wszystkie przez `HTTPException` jak dziś
-     (bez promptów w ciele). Odpowiedź niepoprawna to zwykłe `200` (krok 1 (f)), router nie ma dla
-     niej osobnej ścieżki. Docstring modułu `main.py` (lista endpointów). Testy
-     `tests/unit/test_fastapi_classify.py` (wzorzec `test_fastapi_summarize.py`, atrapa serwisu
-     przez `dependency_overrides`): 200 `matched`, 200 `no_match`, 200 `invalid_response` (prompty,
-     surowa odpowiedź i `error` obecne), 413, 422, 500 / 502 / 503 / 504 z `detail` tekstem,
-     `X-Request-ID`.
+   - [x] **Krok 9. Router — `api/app/routers/classify.py`** (2026-09-18). DI jak w `/summarize`
+     (klient z `get_llm_client()`, `max_prompt_chars` z `LLM_MAX_INPUT_CHARS`, `max_output_tokens`
+     z `LLM_MAX_OUTPUT_TOKENS_CLASSIFY`); `ClassifyOption` → `ClassificationOption` w kolejności
+     żądania (`_to_domain_options`); wyjątki → 413 / 500 / 502 / 503 / 504 przez `HTTPException`
+     (bez promptów w ciele). `invalid_response` to zwykłe `200` — router nie ma dla niego osobnej
+     ścieżki (krok 1 (f)). Testy `test_fastapi_classify.py` (17: trzy wyniki, domenowe opcje z typem
+     `id`, 422, mapowanie wyjątków, `LLMConfigError`, `X-Request-ID`, sekcja DI). Sprawdzian na
+     żywo (kontener, `gpt-4o-mini`): przykład z README → `matched` 21, dokument spoza opcji →
+     `no_match`, 60 000 znaków → 413, pusta lista opcji → 422; log serwisu bez treści pisma.
 
    - [ ] **Krok 10. Testy integracyjne.**
      *Decyzje:*

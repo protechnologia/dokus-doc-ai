@@ -1,8 +1,9 @@
 """Punkt wejscia FastAPI.
 
-Endpointy: /health (krok 2.1), POST /extract (krok 2.3), POST /summarize (krok 2.4) oraz
-POST /extract-and-summarize — pelny pipeline ekstrakcja -> streszczenie (krok 2.5). Minimalne
-logowanie z request-id (przekrojowe) — to NIE monitoring (Zabbix odlozony).
+Endpointy: /health (krok 2.1), POST /extract (krok 2.3), POST /summarize (krok 2.4),
+POST /extract-and-summarize — pelny pipeline ekstrakcja -> streszczenie (krok 2.5) oraz
+POST /classify — wybor jednej opcji z listy albo zadnej na podstawie streszczen (TODO pkt 1).
+Minimalne logowanie z request-id (przekrojowe) — to NIE monitoring (Zabbix odlozony).
 """
 
 import logging
@@ -17,7 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
-from app.routers import extract, health, pipeline, summarize
+from app.routers import classify, extract, health, pipeline, summarize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +29,7 @@ logger = logging.getLogger("dokus")
 app = FastAPI(
     title="DOKUS Doc AI",
     version=__version__,
-    summary="Warstwa AI dla obiegu dokumentow DOKUS — ekstrakcja i streszczenie.",
+    summary="Warstwa AI dla obiegu dokumentow DOKUS — ekstrakcja, streszczenie i klasyfikacja.",
 )
 
 
@@ -109,3 +110,4 @@ app.include_router(health.router)
 app.include_router(extract.router)
 app.include_router(summarize.router)
 app.include_router(pipeline.router)
+app.include_router(classify.router)
