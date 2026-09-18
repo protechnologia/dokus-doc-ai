@@ -2,7 +2,7 @@
 
 Endpointy: /health (krok 2.1), POST /extract (krok 2.3), POST /summarize (krok 2.4),
 POST /extract-and-summarize — pelny pipeline ekstrakcja -> streszczenie (krok 2.5) oraz
-POST /classify — wybor jednej opcji z listy albo zadnej na podstawie streszczen (TODO pkt 1).
+POST /classify — wybor jednej opcji z listy albo zadnej na podstawie streszczen.
 Minimalne logowanie z request-id (przekrojowe) — to NIE monitoring (Zabbix odlozony).
 """
 

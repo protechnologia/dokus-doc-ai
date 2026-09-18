@@ -3,7 +3,8 @@
 declare(strict_types=1);
 
 /**
- * Klient PHP do API dokus-doc-ai — ekstrakcja tekstu z dokumentu + streszczanie. JEDEN
+ * Klient PHP do API dokus-doc-ai — ekstrakcja tekstu z dokumentu, streszczanie i klasyfikacja
+ * (wybor jednej opcji z listy albo zadnej na podstawie streszczen). JEDEN
  * samodzielny plik, bez composera i bez autoloadera: wszystkie klasy (klient + DTO +
  * wyjatki) siedza tu razem, wystarczy `require`.
  *
@@ -13,11 +14,12 @@ declare(strict_types=1);
  * Transport: czysty cURL (zero zaleznosci runtime) — klient jest "drop-in" w dowolnym
  * projekcie bez ryzyka konfliktu zaleznosci. Wymaga rozszerzen `ext-curl` i `ext-json`.
  *
- * Cztery endpointy API (patrz README projektu, sekcja "API"):
+ * Piec endpointow API (patrz README projektu, sekcja "API"):
  *   - GET  /health                  -> health()
  *   - POST /extract                 -> extract() / extractFile()
  *   - POST /summarize               -> summarize()
  *   - POST /extract-and-summarize   -> extractAndSummarize() / extractAndSummarizeFile()
+ *   - POST /classify                -> classify()
  *
  * Przyklad uzycia:
  *     require __DIR__ . '/DocAiClient.php';
@@ -607,12 +609,144 @@ final class DocumentSummary
     }
 }
 
+/**
+ * Do czego: jedna opcja do wyboru w `POST /classify` (WEJSCIE, nie odpowiedz) — odbicie
+ * `ClassifyOption` z API. `id` jest nieprzezroczystym kluczem po stronie wywolujacego: nie trafia
+ * do modelu (ten widzi etykiety nadane przez usluge) i wraca w `ClassifyResult::$optionId` w tym
+ * samym typie (int zostaje int, string stringiem — takze '21'). `name`/`description`/`examples`
+ * to wszystko, co model wie o opcji.
+ */
+final class ClassifyOption
+{
+    /**
+     * @param int|string  $id          Klucz opcji po stronie wywolujacego, np. 21 albo 'numeracja-7'.
+     * @param string      $name        Nazwa opcji, np. 'Skargi i interwencje konsumenckie'.
+     * @param string      $description Opis: czego dotyczy opcja.
+     * @param string|null $examples    Przyklady spraw pasujacych do opcji; null / pusty tekst = brak.
+     */
+    public function __construct(
+        public readonly int|string $id,
+        public readonly string     $name,
+        public readonly string     $description,
+        public readonly ?string    $examples = null,
+    ) {
+    }
+
+    /**
+     * Opis metody: Zamien na tablice ciala zadania (klucze jak w API); `examples` wysylamy takze jako null.
+     * Przyklad argumentow: (instancja z id=21, name='Skargi', description='Skargi konsumentow.', examples=null)
+     * Przyklad wyniku: ['id' => 21, 'name' => 'Skargi', 'description' => 'Skargi konsumentow.', 'examples' => null]
+     */
+    public function toArray(): array
+    {
+        return [
+            'id'          => $this->id,
+            'name'        => $this->name,
+            'description' => $this->description,
+            'examples'    => $this->examples,
+        ];
+    }
+}
+
+/**
+ * Do czego: metadane klasyfikacji — model, ktory odpowiedzial, i zuzycie tokenow. `usage` to
+ * jedyny sygnal po fakcie dla cichych awarii: `promptTokens` stojace na okraglej potedze dwojki
+ * (4096, 8192) = serwer modelu ucial prompt; `completionTokens` rowne limitowi = odpowiedz urwana.
+ */
+final class ClassifyMetadata
+{
+    public function __construct(
+        public readonly string $model,
+        public readonly Usage  $usage,
+    ) {
+    }
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            model: (string) ($data['model'] ?? ''),
+            usage: Usage::fromArray((array) ($data['usage'] ?? [])),
+        );
+    }
+}
+
+/**
+ * Do czego: odpowiedz `POST /classify` — wynik wyboru, uzasadnienie albo przyczyna bledu oraz
+ * pola audytu (oba prompty i surowa odpowiedz modelu — do zapisania jako tekst, bez parsowania;
+ * ich format jest wewnetrzny i moze sie zmieniac miedzy wersjami uslugi).
+ *
+ * Flow decyzji po stronie wywolujacego: decyduj po `outcome` (albo `isMatched()` itd.), NIE po
+ * `optionId` — `null` wystepuje zarowno przy braku dopasowania, jak i przy bezuzytecznej odpowiedzi
+ * modelu. Kazda odpowiedz modelu to HTTP 200 (takze `invalid_response`); sens ma ponowienie
+ * `invalid_response` oraz bledow 502/503/504 (`ApiException`). Ktore pola sa wypelnione:
+ *     matched          -> optionId, rationale;  error = null
+ *     no_match         -> rationale;            optionId = null, error = null
+ *     invalid_response -> error;                optionId = null, rationale = null
+ */
+final class ClassifyResult
+{
+    public const OUTCOME_MATCHED          = 'matched';
+    public const OUTCOME_NO_MATCH         = 'no_match';
+    public const OUTCOME_INVALID_RESPONSE = 'invalid_response';
+
+    public function __construct(
+        public readonly string           $outcome,
+        public readonly int|string|null  $optionId,
+        public readonly ?string          $rationale,
+        public readonly ?string          $error,
+        public readonly string           $systemPrompt,
+        public readonly string           $userPrompt,
+        public readonly string           $rawResponse,
+        public readonly ClassifyMetadata $metadata,
+    ) {
+    }
+
+    /** Czy model wybral jedna z opcji (`optionId` niesie jej klucz). */
+    public function isMatched(): bool
+    {
+        return $this->outcome === self::OUTCOME_MATCHED;
+    }
+
+    /** Czy model uznal, ze zadna opcja nie pasuje (dokument do recznej obslugi). */
+    public function isNoMatch(): bool
+    {
+        return $this->outcome === self::OUTCOME_NO_MATCH;
+    }
+
+    /** Czy odpowiedzi modelu nie da sie uzyc (`error` niesie przyczyne) — kandydat do ponowienia. */
+    public function isInvalidResponse(): bool
+    {
+        return $this->outcome === self::OUTCOME_INVALID_RESPONSE;
+    }
+
+    /**
+     * Opis metody: Zbuduj z odpowiedzi API. `option_id` BEZ rzutowania — `json_decode` zachowuje typ
+     * z JSON-a (21 -> int, "21" -> string), a klucz ma wrocic taki, jaki wyslano.
+     * Przyklad argumentow: ['outcome' => 'matched', 'option_id' => 21, 'rationale' => '...', 'error' => null, ...]
+     * Przyklad wyniku: ClassifyResult(outcome='matched', optionId=21, rationale='...', error=null, ...)
+     */
+    public static function fromArray(array $data): self
+    {
+        $optionId = $data['option_id'] ?? null;
+        return new self(
+            outcome:      (string) ($data['outcome'] ?? ''),
+            optionId:     is_int($optionId) || is_string($optionId) ? $optionId : null,
+            rationale:    isset($data['rationale']) ? (string) $data['rationale'] : null,
+            error:        isset($data['error'])     ? (string) $data['error']     : null,
+            systemPrompt: (string) ($data['system_prompt'] ?? ''),
+            userPrompt:   (string) ($data['user_prompt']   ?? ''),
+            rawResponse:  (string) ($data['raw_response']  ?? ''),
+            metadata:     ClassifyMetadata::fromArray((array) ($data['metadata'] ?? [])),
+        );
+    }
+}
+
 // =====================================================================================
 //  KLIENT
 // =====================================================================================
 
 /**
- * Do czego: wysokopoziomowy klient API dokus-doc-ai — jedno API na cztery endpointy serwera.
+ * Do czego: wysokopoziomowy klient API dokus-doc-ai — jedno API na piec endpointow serwera.
  * Zna kontrakty (sciezki, ksztalt wejscia/wyjscia, mapowanie kodow na wyjatki); transport
  * (cURL) deleguje do `CurlTransport`. To jedyna klasa, ktora konsument zwykle widzi.
  *
@@ -626,6 +760,7 @@ final class DocumentSummary
  *     $sum    = $client->summarize('Dluga tresc pisma...');         // POST /summarize
  *     $doc    = $client->extractAndSummarizeFile('/tmp/pismo.pdf'); // POST /extract-and-summarize
  *     $doc    = $client->extractAndSummarizeFile('/tmp/pismo.pdf', headPercent: 45, tailPercent: 55); // bez srodka
+ *     $wybor  = $client->classify([$doc->summary], [new ClassifyOption(21, 'Skargi', 'Skargi konsumentow.')]); // POST /classify
  */
 final class DocAiClient
 {
@@ -784,6 +919,49 @@ final class DocAiClient
     ): DocumentSummary {
         [$base64, $filename] = $this->readFileAsBase64($path);
         return $this->extractAndSummarize($base64, $filename, $contentType, $headPercent, $tailPercent);
+    }
+
+    /**
+     * Opis metody:
+     * Wybierz dla dokumentu jedna opcje z listy albo zadna (`POST /classify`) na podstawie
+     * streszczen jego plikow (np. pol `summary` z `summarize()`). Jedno wywolanie = jeden wybor;
+     * wybor wieloszczeblowy (np. najpierw grupa, potem pozycja w grupie) to kolejne wywolania.
+     * Model widzi opcje pod etykietami nadanymi przez usluge, a lista zawsze konczy sie pozycja
+     * "brak dopasowania" dolaczana przez serwer. Decyduj po `ClassifyResult::$outcome`.
+     *
+     * Walidacji wejscia tu NIE dublujemy (puste listy, typy) — robi ja serwer i zwraca czytelny
+     * `detail` (422). Kolejnosc streszczen nie ma znaczenia; kolejnosc opcji jest zachowana.
+     *
+     * Przyklad argumentow:
+     *     summaries=['• Typ pisma: skarga\n• Czego dotyczy: zawyzony rachunek operatora'],
+     *     options=[new ClassifyOption(21, 'Skargi konsumenckie', 'Skargi konsumentow na dostawcow uslug.'),
+     *              new ClassifyOption('numeracja-7', 'Numeracja', 'Przydzial zasobow numeracji.')]
+     *
+     * Przyklad wyniku:
+     *     ClassifyResult(outcome='matched', optionId=21, rationale='Skarga konsumenta ...', error=null,
+     *                    systemPrompt='...', userPrompt='...', rawResponse='{...}', metadata=ClassifyMetadata(...))
+     *
+     * Raises:
+     *     ApiException(413): prompt (streszczenia + opcje) dluzszy niz okno modelu po stronie serwera.
+     *     ApiException(422): brak / pusta lista streszczen lub opcji, zly typ `id`.
+     *     ApiException(500): zla konfiguracja dostawcy LLM po stronie serwera / zly klucz.
+     *     ApiException(502): inny blad po stronie dostawcy LLM.
+     *     ApiException(503): dostawca LLM dlawi (limit/kwota).
+     *     ApiException(504): dostawca LLM nie odpowiedzial w czasie.
+     *     TransportException: nie udalo sie dobic do API.
+     *
+     * @param string[]         $summaries Streszczenia plikow dokumentu (co najmniej jedno).
+     * @param ClassifyOption[] $options   Opcje do wyboru (co najmniej jedna), w kolejnosci wywolujacego.
+     */
+    public function classify(array $summaries, array $options): ClassifyResult
+    {
+        // `array_values`: JSON-owa lista, nawet gdy wywolujacy poda tablice z kluczami (inaczej obiekt JSON -> 422).
+        $body = [
+            'summaries' => array_values($summaries),
+            'options'   => array_map(static fn (ClassifyOption $option): array => $option->toArray(), array_values($options)),
+        ];
+        $data = $this->requestJson('POST', '/classify', $body);
+        return ClassifyResult::fromArray($data);
     }
 
     // --- Wewnetrzne helpery -----------------------------------------------------------

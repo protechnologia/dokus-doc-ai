@@ -676,8 +676,8 @@ Gotowi klienci do konsumowania API z innych systemów.
 API. **Jeden samodzielny plik**, bez composera i bez autoloadera: wystarczy `require`. Transport na
 czystym cURL (zero zależności runtime; wymaga rozszerzeń `ext-curl` i `ext-json`), PHP **8.1+**.
 
-Pokrywa wszystkie cztery endpointy: `health()`, `extract()`/`extractFile()`,
-`summarize()`, `extractAndSummarize()`/`extractAndSummarizeFile()`. Konfiguracja (adres API,
+Pokrywa wszystkie pięć endpointów: `health()`, `extract()`/`extractFile()`,
+`summarize()`, `extractAndSummarize()`/`extractAndSummarizeFile()`, `classify()`. Konfiguracja (adres API,
 timeouty) jest wstrzykiwana przez `Config`. Błędy: `ApiException` (odpowiedź HTTP 4xx/5xx, niesie
 `statusCode`, `detail` i `X-Request-ID`) oraz `TransportException` (nie udało się dobić do API —
 sieć/timeout).
@@ -731,6 +731,29 @@ if ($meta->truncated) {
     $koniec = $meta->parts->tail;                 // SummarizePart: percent / start / end
     echo mb_substr($wynik->text, $koniec->start, $koniec->end - $koniec->start, 'UTF-8');
 }
+```
+
+Klasyfikacja — wybór jednej opcji z listy albo żadnej (decyzja po `outcome`, nie po `optionId`):
+
+```php
+use Dokus\DocAi\ClassifyOption;
+
+$wybor = $client->classify(
+    [$wynik->summary],                                             // streszczenia plików dokumentu
+    [
+        new ClassifyOption(21, 'Skargi konsumenckie', 'Skargi konsumentów na dostawców usług.'),
+        new ClassifyOption('numeracja-7', 'Numeracja', 'Przydział zasobów numeracji.', examples: null),
+    ],
+);
+
+if ($wybor->isMatched()) {
+    echo $wybor->optionId;                        // 21 albo 'numeracja-7' — typ jak w żądaniu
+} elseif ($wybor->isNoMatch()) {
+    // żadna opcja nie pasuje — obsługa ręczna
+} else {
+    // isInvalidResponse(): odpowiedzi modelu nie da się użyć ($wybor->error) — można ponowić
+}
+// Audyt (zapisywać jako tekst): $wybor->systemPrompt, $wybor->userPrompt, $wybor->rawResponse
 ```
 
 ## Uwagi techniczne

@@ -209,7 +209,7 @@ samego endpointu. **Usługa nie zna pojęć „grupa" ani „stanowisko"** — d
 (`id` nieprzezroczysty: int albo string; `description` i `examples` pisze urząd) oraz streszczenia
 plików dokumentu (wynik `/summarize`). Jedno żądanie = jedno wywołanie modelu = jeden wybór.
 Kontrakt **zamrożony 2026-09-16** (README „POST /classify" + `models/classify.py`; zmiany tylko za
-zgodą obu stron). Zbudowane w 11 krokach (TODO pkt 1, 2026-09-16…18) — znaczniki „krok N (x)"
+zgodą obu stron). Zbudowane w 11 krokach (dawny TODO pkt 1, 2026-09-16…18) — znaczniki „krok N (x)"
 w kodzie odnoszą się do punktów poniżej.
 
 **Kontrakt — z kodu nie wynika:**
@@ -276,7 +276,7 @@ i model):
 - **Świadomie NIE robimy:** uwierzytelniania (izolacja sieciowa; TODO pkt 5 zostaje blokerem
   wdrożenia); pola pewności (samoocena źle skalibrowana — gdy `OPT-00` nie wystarczy: logprobs albo
   człowiek w pętli, nie próg); ponowień w usłudze (robi je task DOKUS-a); endpointu schodzącego
-  samodzielnie z grupy na stanowisko; zmian promptu streszczeń (braki zgłaszać wnioskiem, TODO pkt 1).
+  samodzielnie z grupy na stanowisko; zmian promptu streszczeń (braki zgłaszać wnioskiem, TODO pkt 13).
 
 **Jakość — golden set `samples/classification/`** (kroki 10–11, 2026-09-18):
 - `katalog.json` — syntetyczny urząd miasta, 7 grup ze stanowiskami (gminny, bo pisma z
@@ -310,7 +310,7 @@ i model):
   bezpośrednio…" i przytacza opis pasującej opcji BEZ fragmentu, który pasuje (18: „sprawy
   pracownicze, **dostęp do informacji publicznej** i obsługa Rady" → „sprawy pracownicze i obsługa
   Rady" → `OPT-00`); „bezpośrednio / dokładne" w 8/37 uzasadnień 11B, 0/37 u `gpt-4o-mini`.
-  Hipotezy i eksperymenty — TODO pkt 1.
+  Eksperymenty — TODO pkt 11.
 - 11B na GPU powtarzalny (37/37 ten sam wybór; `gpt-4o-mini` 36/37). Tokenizer Bielika ~1,65 znaku
   na token (`gpt-4o-mini` ~2,7) na tym samym prompcie — ważne przy doborze `LLM_MAX_INPUT_CHARS`.
 
@@ -379,14 +379,18 @@ w środku żądania. Do ustawienia po pomiarze na docelowej maszynie, nie „na 
 Baza obrazu FastAPI przypięta **digestem** (`python:3.12-slim@sha256:...`), nie samym tagiem —
 ruchomy tag dawałby przy rebuildzie na serwerze inny obraz niż testowany.
 
-## Klient PHP — integracja z DOKUS
+## Klient PHP — ogólny, referencyjny
 
-Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
-(`integrations/php/DocAiClient.php`): DOKUS (lub inny ESOD) woła nasze API, wysyła oryginał
-(base64) i odbiera streszczenie.
+**Uniwersalny klient PHP** (`integrations/php/DocAiClient.php`) dla dowolnego systemu w PHP 8.1+:
+wysyła oryginał (base64), odbiera tekst / streszczenie / wybór opcji. **DOKUS go nie używa** — ma
+własnego klienta `Dokus\AiUke\Client\Client` (PHP 7.4, poniżej naszego minimum 8.1); nasz jest
+produktem ogólnym i wzorcową implementacją kontraktu API.
 
 - **JEDEN samodzielny plik**, namespace `Dokus\DocAi` (klient + DTO + wyjątki). Pokrywa
-  cztery endpointy (warianty `*File()` same czytają plik i kodują base64).
+  pięć endpointów (warianty `*File()` same czytają plik i kodują base64). `classify()` przyjmuje
+  opcje jako DTO `ClassifyOption`; `ClassifyResult::$optionId` bez rzutowania (typ z JSON-a:
+  `21` → int, `"21"` → string), decyzja po `outcome` (`isMatched()` / `isNoMatch()` /
+  `isInvalidResponse()`).
 - **Decyzje:** bez `composer.json`/autoloadera (drop-in `require`, zero konfliktu zależności
   w cudzym ESOD-zie); czysty cURL (`ext-curl`+`ext-json`); PHP **8.1+**. Komentarze
   uniwersalne — bez nazwy DOKUS i roadmapy (klient ma być produktem ogólnym).
@@ -394,42 +398,18 @@ Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
   żyje w `DocAiClient`; `Config` (adres + timeouty, domyślnie 180 s pod sekwencyjny OCR+LLM)
   wstrzykiwany. Błędy: `DocAiException` → `TransportException` / `ApiException` (niesie
   `statusCode`/`detail`/`X-Request-ID`).
-- **Znane ograniczenie:** `CurlTransport` jest `final` → nie podmienia się na atrapę; pełne
-  mapowanie testowane realnym 422, nie mockiem. Czysty mock wymagałby wydzielenia interfejsu
-  transportu — nie robione bez potrzeby.
+- **Znane ograniczenie:** `CurlTransport` jest `final` → nie podmienia się na atrapę; mapowanie
+  testowane na żywym API, nie mockiem. Czysty mock wymagałby wydzielenia interfejsu transportu —
+  nie robione bez potrzeby. Sprawdzian bez PHP na hoście (minimalna wersja):
+  `docker run --rm --network host -v $PWD/integrations/php:/client:ro php:8.1-cli php -l /client/DocAiClient.php`
+  (+ skrypt z wywołaniami na `localhost:8000`). `classify()` sprawdzone tak 2026-09-18: `matched` /
+  `no_match`, typ `id` (int i `'21'`), 422 z `detail`, 413.
 
 ## TODO — przed wdrożeniem produkcyjnym
 
-Pkt 1 = to, co zostało z klasyfikacji; dalej luki „ostatniej mili" (system dla urzędu), kolejność wg wagi:
-
-1. **Klasyfikacja `POST /classify` — co zostaje** (mechanizm, testy i golden set gotowe — sekcja
-   „Klasyfikacja" wyżej):
-   - **Wzorzec 11B „przegadanie ku `OPT-00`" — rozstrzygnąć eksperymentem.** Hipotezy
-     (NIESPRAWDZONE): H2 kolejność pól — wybór zapada w pierwszych słowach uzasadnienia, reszta
-     racjonalizuje (pominięty akurat fragment sprzeczny z tezą); H1 zdanie „ale nie wybieraj opcji,
-     która nie pasuje" + przykład `OPT-00` w prompcie; H3 wybiórcze czytanie opisów wielotematycznych;
-     H4 dane (16 graniczne z założenia, 07 myli też `gpt-4o-mini` — opis grupy 10). Eksperymenty:
-     E1 etykieta przed uzasadnieniem (kontrakt bez zmian), E2 bez zdania z H1, E3 opisy jako listy
-     tematów. Prompt wspólny → każdy wariant na OBU modelach (poprawka pod 11B może dodać fałszywych
-     dopasowań u `gpt-4o-mini`); 11B powtarzalny → jeden przebieg na wariant. Warianty w scratchpadzie,
-     do repo dopiero zwycięski.
-   - **Uzasadnienie przy `OPT-00` bez wyliczania opcji.** Wyliczanie nic nie wnosi do audytu (lista
-     jest w `user_prompt`), powstaje PO decyzji, a jego długość rośnie z katalogiem bez sufitu (Bielik
-     241 tokenów przy 7 opcjach). Prawdopodobny wyzwalacz: „(przy OPT-00: dlaczego nic nie pasuje)"
-     w `classification_system.md`. Kierunek: sformułowanie pozytywne („jednym zdaniem: czego dotyczy
-     dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po razem z E1–E3; potem obniżyć
-     default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
-   - **Niesprawdzone:** Open WebUI `/ollama/v1` — czy przepuszcza `response_format` (jeśli nie, ścisły
-     parser da `invalid_response` na każdą odpowiedź zapisaną inaczej niż gołym JSON-em); realny
-     katalog grup i stanowisk DOKUS-a (dane urzędu → poza repo).
-   - **Klient PHP** `integrations/php/DocAiClient.php`: decyzja — dokładamy `classify()` + DTO z polem
-     `outcome` czy nie. Według zgłoszenia DOKUS (PHP 7.4) ma własnego klienta
-     `Dokus\AiUke\Client\Client`, a nasz wymaga PHP 8.1+, więc w tej integracji nie jest używany —
-     urealnić sekcję „Klient PHP" (kto faktycznie z niego korzysta).
-   - **Wniosek o brakach streszczeń** (prompt streszczeń zostaje bez zmian): czy wybór bywa
-     nierozstrzygalny przez to, czego streszczenie nie zawiera; jeśli tak — wniosek z przykładami
-     (prompty + surowe odpowiedzi). Punkty wyjścia: 09 (streszczenie zgubiło „VAT" → `gpt-4o-mini`
-     wysłał pismo do grupy podatkowej), pkt 9 (adresata brakuje w 19/20 streszczeń).
+Luki „ostatniej mili" (system dla urzędu), kolejność wg wagi; 11–13 — otwarte sprawy klasyfikacji.
+Numeracja stała, bo kod i testy odwołują się do „TODO pkt N" (pkt 1 — budowa `/classify` — zamknięty
+2026-09-18, wiedza w sekcji „Klasyfikacja"):
 
 2. **Limit stron PDF tnie PRZED decyzją o OCR — koniec długiego PDF-a i pełny `text` giną.**
    `PdfPageLimiter` bierze pierwsze `MAX_OCR_PAGES` stron, zanim plik trafi do Tiki (strategia (B)
@@ -565,6 +545,16 @@ Pkt 1 = to, co zostało z klasyfikacji; dalej luki „ostatniej mili" (system dl
    przebiegi** i **zawsze czytać surowe odpowiedzi**, nie tylko licznik.
 10. **Obserwowalność.** Poza request-id brak metryk/tracingu → diagnoza „czemu streszczenie wyszło
    źle" trudna. Monitoring (np. Zabbix) + logi jakościowe.
+11. **Prompt klasyfikacji pod Bielika 11B.** 11B „przegaduje się" ku `OPT-00` (sekcja „Klasyfikacja").
+    Sprawdzić: E1 etykieta przed uzasadnieniem, E2 bez zdania „ale nie wybieraj opcji, która nie
+    pasuje", E3 opisy opcji jako listy tematów; przy okazji uzasadnienie przy `OPT-00` bez wyliczania
+    opcji (długość rośnie z katalogiem — potem obniżyć `LLM_MAX_OUTPUT_TOKENS_CLASSIFY`). Każdy wariant
+    na golden secie na OBU modelach — prompt jest wspólny.
+12. **Realny katalog DOKUS-a.** Golden set stoi na syntetycznym katalogu gminnym; sprawdzić wybór na
+    realnych grupach i stanowiskach (dane urzędu → poza repo).
+13. **Wniosek o brakach streszczeń** (prompt streszczeń bez zmian). Czy wybór bywa nierozstrzygalny
+    przez to, czego streszczenie nie zawiera — 09: zgubione „VAT" → `gpt-4o-mini` wysłał pismo na złe
+    miejsce; adresata brak w 19/20 streszczeń (pkt 9). Jeśli tak — wniosek z przykładami.
 
 ## Świadomie pominięte (NIE dodawać bez pytania)
 
