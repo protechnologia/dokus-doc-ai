@@ -295,8 +295,9 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
    blokerem wdrożenia); pola pewności (samoocena modelu jest źle skalibrowana — gdy `OPT-00` nie
    wystarczy, właściwa droga to logprobs albo człowiek z powrotem w pętli, nie próg); ponowień w usłudze
    (robi je task DOKUS-a); endpointu schodzącego samodzielnie z grupy na stanowisko; zmian promptu
-   streszczeń (mechanizm jest jeden dla wszystkich podsumowań — braki zgłaszać wnioskiem);
-   systematycznej oceny wyborów (w tym kroku wystarczy sprawdzian ręczny, golden set później).
+   streszczeń (mechanizm jest jeden dla wszystkich podsumowań — braki zgłaszać wnioskiem).
+   Pierwotnie też „systematycznej oceny wyborów (golden set później)" — golden set zrobiony
+   w kroku 10 (decyzja 2026-09-18).
 
    Kroki w kolejności wykonania; checkbox kroku = kod i testy gotowe. Decyzje, bez których kroku nie
    da się zrobić, stoją na jego początku — też do odhaczenia.
@@ -449,20 +450,34 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      żywo (kontener, `gpt-4o-mini`): przykład z README → `matched` 21, dokument spoza opcji →
      `no_match`, 60 000 znaków → 413, pusta lista opcji → 422; log serwisu bez treści pisma.
 
-   - [ ] **Krok 10. Testy integracyjne.**
-     *Decyzje:*
-     - [ ] (a) Materiał: syntetyczny mini-katalog opcji + pisma z `samples/summarization/` (w repo)
-       czy realny katalog grup i stanowisk od DOKUS-a (dane urzędu → poza repo, jak `sample_01.pdf`).
+   - [x] **Krok 10. Testy integracyjne + golden set klasyfikacji** (2026-09-18). Z kodu nie wynika:
+     - **Golden set w `samples/classification/`** (zamiast mini-katalogu): `katalog.json` — syntetyczny
+       urząd miasta, 7 grup ze stanowiskami (gminny, bo pisma z `samples/summarization/` są gminne;
+       katalog w stylu UKE dałby same `no_match`), z celowymi zmyłkami (grupa 70 bez pism, FN-3
+       obok FN-2, OK-3 obok GN-3); `golden.json` — oczekiwana grupa / stanowisko dla 20 pism,
+       w tym 3 spoza katalogu (06, 09, 14) i 1 z grupą bez stanowiska (16); `summaries.json` —
+       **zamrożone streszczenia** (decyzja 1a: stałe wejście, pomyłka wyboru nie miesza się ze
+       zmiennością streszczeń), generowane `build_summaries.py` przez `/extract-and-summarize` —
+       uruchomić ponownie po zmianie promptu streszczeń lub ekstrakcji.
+     - **Znane ograniczenie: katalog i odpowiedzi ustalił Claude, bez przeglądu człowieka**
+       (decyzja użytkownika) — autor odpowiedzi to model tego samego rodzaju co oceniany (ta sama
+       wada co „sędzia = autor" w pkt 9). Pole z uzasadnieniem w golden świadomie usunięte.
+     - **`test_classification_service.py` = cały golden set z progiem 80%** (decyzja 1b), osobno
+       grupy i stanowiska; stanowisko pytane w OCZEKIWANEJ grupie (pomyłka na grupie nie liczy się
+       podwójnie). Pisma spoza katalogu liczą się w progu; **osobny, bezwzględny test siatki
+       bezpieczeństwa zostaje w `test_classification_prompt.py`** (decyzja 2 — plik nie usunięty).
+       Raport pomyłek z uzasadnieniem modelu także przy sukcesie (`pytest -s`).
+     - **`test_fastapi_classify.py` = sam kontrakt** (decyzja 3), niezależny od dostawcy: kształt
+       i spójność pól z `outcome`, 413, 422. Spójność trzech plików danych: jednostkowy
+       `test_classification_golden_data.py`.
+     - Fixture `llm_client` przeniesiony do `tests/integration/conftest.py` (był skopiowany w dwóch
+       testach promptów). Pułapka: klient **nowy na każdy test**, a wiele wywołań w teście — w JEDNYM
+       `asyncio.run` (`AsyncOpenAI` wiąże pulę połączeń z pętlą zdarzeń; „Event loop is closed").
 
-     *Zrobić:* `tests/integration/test_fastapi_classify.py` (`integration` + `integration_fastapi`):
-     kontrakt end-to-end na `fake`. `tests/integration/test_classification_service.py` (`integration`
-     + `integration_llm`): oczywiste dopasowanie → właściwe `id`; **osobny test siatki
-     bezpieczeństwa: dokument spoza wszystkich opcji → `null`**.
-     *Już jest (2026-09-17):* oba przypadki na poziomie promptu —
-     `tests/integration/test_classification_prompt.py` (prompty + schemat + `OptionLabeler` + realny
-     klient, `openai` i `ollama`; syntetyczny katalog z README). Po kroku 7 przenieść na serwis.
-     Pułapka: klient LLM **nowy na każdy test** — `AsyncOpenAI` wiąże pulę połączeń z pętlą zdarzeń,
-     a każdy `asyncio.run` to nowa pętla; wspólny klient wywala drugi test („Event loop is closed").
+     Pierwszy wynik (`gpt-4o-mini`): grupy 18/20 (90%), stanowiska 17/17. Pomyłki: 07 wezwanie do
+     zapłaty → `no_match` (opis grupy 10 za słabo mówi o należnościach handlowych — katalogu NIE
+     poprawiamy pod wynik), 09 pełnomocnictwo → grupa podatkowa (streszczenie zgubiło „VAT" —
+     materiał do kroku 14).
 
    - [ ] **Krok 11. Sprawdzian ręczny na realnym modelu** (Bielik 11B przez Ollamę i OpenAI; ocena
      systematyczna świadomie później).

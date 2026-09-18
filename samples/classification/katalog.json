@@ -1,0 +1,163 @@
+{
+  "opis": "Syntetyczny katalog grup (wydziałów) i stanowisk urzędu miasta do golden setu POST /classify. Pola opcji (id, name, description, examples) = kontrakt ClassifyOption, więc grupy i stanowiska idą do /classify bez przekształceń. Gminny, bo pisma z samples/summarization/ są gminne (katalog w stylu UKE dałby same no_match). Zawiera celowe zmyłki: grupa 70 bez żadnego pisma, stanowiska FN-3 i OK-3 blisko pism z innych stanowisk. Oczekiwane odpowiedzi: golden.json.",
+  "grupy": [
+    {
+      "id": 10,
+      "name": "Wydział Finansowo-Podatkowy",
+      "description": "Podatki i opłaty lokalne pobierane przez gminę oraz rozliczenia finansowe urzędu z kontrahentami.",
+      "examples": "Decyzja w sprawie podatku od nieruchomości; faktura od dostawcy; zmiana numeru rachunku kontrahenta.",
+      "stanowiska": [
+        {
+          "id": "FN-1",
+          "name": "Wymiar podatków lokalnych",
+          "description": "Wymiar podatku od nieruchomości, rolnego, leśnego i od środków transportowych: decyzje wymiarowe, informacje i deklaracje podatkowe, odwołania od decyzji wymiarowych.",
+          "examples": "Decyzja ustalająca podatek od nieruchomości; informacja IN-1."
+        },
+        {
+          "id": "FN-2",
+          "name": "Księgowość i rozliczenia z kontrahentami",
+          "description": "Faktury i rachunki od dostawców i wykonawców, płatności, wezwania do zapłaty od kontrahentów, zmiany rachunków bankowych kontrahentów.",
+          "examples": null
+        },
+        {
+          "id": "FN-3",
+          "name": "Windykacja należności podatkowych",
+          "description": "Zaległości w podatkach i opłatach lokalnych: upomnienia, tytuły wykonawcze, wnioski o ulgi, umorzenia i rozłożenie zaległości na raty.",
+          "examples": "Wniosek o umorzenie zaległości w podatku rolnym."
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "name": "Wydział Architektury i Urbanistyki",
+      "description": "Planowanie przestrzenne i lokalizacja inwestycji na terenie gminy.",
+      "examples": null,
+      "stanowiska": [
+        {
+          "id": "AU-1",
+          "name": "Warunki zabudowy",
+          "description": "Decyzje o warunkach zabudowy i o lokalizacji inwestycji celu publicznego, w tym ponaglenia i skargi na bezczynność w tych sprawach.",
+          "examples": "Wniosek o ustalenie warunków zabudowy dla budynku mieszkalnego."
+        },
+        {
+          "id": "AU-2",
+          "name": "Miejscowe plany zagospodarowania przestrzennego",
+          "description": "Sporządzanie i zmiany planów miejscowych i studium, wnioski i uwagi do projektów planów, wypisy i wyrysy z planu.",
+          "examples": null
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "name": "Wydział Gospodarki Nieruchomościami",
+      "description": "Gospodarowanie nieruchomościami gminy: prawa do gruntów, najem lokali gminnych, udziały gminy we wspólnotach mieszkaniowych.",
+      "examples": "Wniosek o przekształcenie użytkowania wieczystego; uchwała wspólnoty mieszkaniowej.",
+      "stanowiska": [
+        {
+          "id": "GN-1",
+          "name": "Użytkowanie wieczyste i przekształcenia",
+          "description": "Przekształcenie prawa użytkowania wieczystego we własność, opłaty roczne i opłaty przekształceniowe, bonifikaty.",
+          "examples": null
+        },
+        {
+          "id": "GN-2",
+          "name": "Najem i dzierżawa lokali użytkowych",
+          "description": "Umowy najmu i dzierżawy lokali użytkowych: zawarcie, wypowiedzenie, czynsze, kaucje, zwrot lokalu.",
+          "examples": "Wypowiedzenie umowy najmu lokalu na działalność gospodarczą."
+        },
+        {
+          "id": "GN-3",
+          "name": "Wspólnoty mieszkaniowe z udziałem gminy",
+          "description": "Udział gminy jako współwłaściciela we wspólnotach mieszkaniowych: uchwały wspólnot, zebrania, zaliczki na fundusz remontowy.",
+          "examples": null
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "name": "Wydział Ochrony Środowiska",
+      "description": "Ochrona przyrody i środowiska na terenie gminy.",
+      "examples": null,
+      "stanowiska": [
+        {
+          "id": "OS-1",
+          "name": "Zieleń i usuwanie drzew",
+          "description": "Zezwolenia na usunięcie drzew i krzewów, kary za usunięcie bez zezwolenia, nasadzenia zastępcze, odwołania w tych sprawach.",
+          "examples": "Wniosek o zezwolenie na wycinkę drzewa zagrażającego bezpieczeństwu."
+        },
+        {
+          "id": "OS-2",
+          "name": "Gospodarka odpadami",
+          "description": "Odbiór odpadów komunalnych, deklaracje i opłaty za gospodarowanie odpadami, dzikie wysypiska.",
+          "examples": null
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "name": "Wydział Inwestycji i Zamówień Publicznych",
+      "description": "Zakupy, usługi i roboty budowlane: od zapytań ofertowych i ofert po realizację i odbiór robót.",
+      "examples": null,
+      "stanowiska": [
+        {
+          "id": "IZ-1",
+          "name": "Zamówienia publiczne",
+          "description": "Postępowania o udzielenie zamówienia, zapytania ofertowe, oferty wykonawców i dostawców.",
+          "examples": "Zapytanie ofertowe na usługę; oferta handlowa wykonawcy."
+        },
+        {
+          "id": "IZ-2",
+          "name": "Realizacja i odbiory robót",
+          "description": "Nadzór nad realizacją robót budowlanych i instalacyjnych, protokoły odbioru, usterki, gwarancje.",
+          "examples": null
+        }
+      ]
+    },
+    {
+      "id": 60,
+      "name": "Wydział Organizacyjno-Kadrowy",
+      "description": "Sprawy pracownicze, dostęp do informacji publicznej i obsługa Rady Miasta.",
+      "examples": null,
+      "stanowiska": [
+        {
+          "id": "OK-1",
+          "name": "Kadry",
+          "description": "Sprawy pracownicze: zatrudnienie, urlopy, zaświadczenia o zatrudnieniu i wynagrodzeniu, akta osobowe.",
+          "examples": "Podanie o urlop bezpłatny; wniosek o zaświadczenie o zatrudnieniu."
+        },
+        {
+          "id": "OK-2",
+          "name": "Dostęp do informacji publicznej",
+          "description": "Wnioski o udostępnienie informacji publicznej i odpowiedzi na nie, Biuletyn Informacji Publicznej.",
+          "examples": null
+        },
+        {
+          "id": "OK-3",
+          "name": "Obsługa Rady Miasta",
+          "description": "Sesje Rady Miasta, projekty i rejestr uchwał rady, interpelacje i zapytania radnych.",
+          "examples": null
+        }
+      ]
+    },
+    {
+      "id": 70,
+      "name": "Wydział Spraw Obywatelskich",
+      "description": "Ewidencja ludności, dowody osobiste i sprawy stanu cywilnego.",
+      "examples": "Zameldowanie na pobyt stały; wniosek o wydanie dowodu osobistego; odpis aktu urodzenia.",
+      "stanowiska": [
+        {
+          "id": "SO-1",
+          "name": "Ewidencja ludności i dowody osobiste",
+          "description": "Zameldowania i wymeldowania, wnioski o dowód osobisty, udostępnianie danych z rejestru PESEL.",
+          "examples": null
+        },
+        {
+          "id": "SO-2",
+          "name": "Urząd Stanu Cywilnego",
+          "description": "Akty urodzenia, małżeństwa i zgonu, zmiana imienia i nazwiska.",
+          "examples": null
+        }
+      ]
+    }
+  ]
+}

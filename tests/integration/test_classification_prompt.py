@@ -2,17 +2,18 @@
 
 Marker: integration_llm (+ parasol integration). Prompty (`ClassificationSystemPrompt`,
 `ClassificationUserPrompt`), schemat (`build_response_schema`) i etykiety (`OptionLabeler`) jak
-w usłudze; klient z konfiguracji (`build_llm_client`), więc działa na `openai` i `ollama`.
-Przy `LLM_PROVIDER=fake` albo niekompletnej konfiguracji -> SKIP (nie fail).
+w usłudze; klient z konfiguracji (fixture `llm_client` z conftest), więc działa na `openai`
+i `ollama`. Przy `LLM_PROVIDER=fake` albo niekompletnej konfiguracji -> SKIP (nie fail).
 
 Ollama z hosta: `.env` wskazuje adres z sieci compose (`http://ollama:11434/v1`), więc nadpisz ENV:
     LLM_PROVIDER=ollama LLM_BASE_URL=http://localhost:11434/v1 \
     LLM_MODEL=SpeakLeash/bielik-4.5b-v3.0-instruct:Q8_0 LLM_TIMEOUT_SECONDS=300 pytest -m integration_llm
 (CPU: ok. 1 min na wywołanie — domyślne 60 s nie wystarcza.)
 
-Syntetyczny mini-katalog i przypadki oczywiste: to NIE jest pomiar jakości wyboru (krok 11), tylko
-dowód, że prompt + schemat prowadzą realny model do właściwej etykiety w obu kierunkach. Gdy
-powstanie `ClassificationService` (krok 7), krok 10 przenosi te przypadki na poziom serwisu.
+Syntetyczny mini-katalog z README i przypadki oczywiste: to NIE jest pomiar jakości wyboru, tylko
+dowód, że prompt + schemat prowadzą realny model do właściwej etykiety w obu kierunkach. Zostaje
+obok testu serwisu na golden secie (`test_classification_service.py`, decyzja 2 kroku 10): tam
+pisma spoza katalogu liczą się w progu 80%, a tu siatka bezpieczeństwa ma osobny, bezwzględny test.
 """
 
 import asyncio
@@ -25,7 +26,7 @@ from app.classification.prompt_user import ClassificationUserPrompt
 from app.classification.service_labels import ClassificationOption, OptionLabeler
 from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
 from app.config import get_settings
-from app.llm import LLMClient, LLMConfigError, build_llm_client
+from app.llm import LLMClient
 
 # Parasol `integration` + węższy `integration_llm` (uderzamy w realnego dostawcę LLM).
 pytestmark = [pytest.mark.integration, pytest.mark.integration_llm]
@@ -36,23 +37,6 @@ _OPTIONS = [
     ClassificationOption(id=22, name="Rynek pocztowy", description="Sprawy operatorów pocztowych: wpisy do rejestru, sprawozdania, kontrole.", examples=None),
     ClassificationOption(id="numeracja-7", name="Numeracja", description="Przydział i rezerwacja zasobów numeracji.", examples=None),
 ]
-
-
-@pytest.fixture
-def llm_client() -> LLMClient:
-    """Realny klient LLM z konfiguracji, NOWY na każdy test; `fake` albo niekompletna konfiguracja -> SKIP.
-
-    Nie `scope="module"`: `AsyncOpenAI` wiąże pulę połączeń z pętlą zdarzeń pierwszego żądania,
-    a każdy test woła `asyncio.run` (nowa pętla) — wspólny klient wywala drugi test błędem
-    „Event loop is closed" (zmierzone). W usłudze jest jedna pętla, więc tam klient z cache jest OK.
-    """
-    settings = get_settings()
-    if settings.llm_provider == "fake":
-        pytest.skip("LLM_PROVIDER=fake — test wymaga realnego dostawcy (openai / ollama)")
-    try:
-        return build_llm_client(settings)
-    except LLMConfigError as exc:
-        pytest.skip(f"niekompletna konfiguracja LLM: {exc}")
 
 
 def _classify(client: LLMClient, summaries: list[str]) -> tuple[int | str | None, dict]:

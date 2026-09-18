@@ -1,7 +1,7 @@
 """Testy integracyjne promptu streszczeń na realnym modelu — czy pola wypełniane są treścią z pisma.
 
 Marker: integration_llm (+ parasol integration). Prompty (`SummarySystemPrompt`, `SummaryUserPrompt`)
-jak w usłudze; klient z konfiguracji (`build_llm_client`), więc działa na `openai` i `ollama`.
+jak w usłudze; klient z konfiguracji (fixture `llm_client` z conftest), więc działa na `openai` i `ollama`.
 Przy `LLM_PROVIDER=fake` albo niekompletnej konfiguracji -> SKIP (nie fail). Ollama z hosta —
 nadpisanie ENV jak w `test_classification_prompt.py`.
 
@@ -18,7 +18,7 @@ import asyncio
 import pytest
 
 from app.config import get_settings
-from app.llm import LLMClient, LLMConfigError, build_llm_client
+from app.llm import LLMClient
 from app.summarization.prompt_system import SummarySystemPrompt
 from app.summarization.prompt_user import SummaryUserPrompt
 
@@ -45,18 +45,6 @@ _WNIOSEK = (
     "Z poważaniem\n"
     "Jan Nowak"
 )
-
-
-@pytest.fixture
-def llm_client() -> LLMClient:
-    """Realny klient LLM z konfiguracji, NOWY na każdy test (pętla zdarzeń — patrz `test_classification_prompt.py`); `fake` -> SKIP."""
-    settings = get_settings()
-    if settings.llm_provider == "fake":
-        pytest.skip("LLM_PROVIDER=fake — test wymaga realnego dostawcy (openai / ollama)")
-    try:
-        return build_llm_client(settings)
-    except LLMConfigError as exc:
-        pytest.skip(f"niekompletna konfiguracja LLM: {exc}")
 
 
 def _summarize(client: LLMClient, text: str) -> str:

@@ -12,6 +12,9 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
+from app.config import get_settings
+from app.llm import LLMClient, LLMConfigError, build_llm_client
+
 TIKA_URL = os.environ.get("TIKA_URL", "http://localhost:9998")
 FASTAPI_URL = os.environ.get("FASTAPI_URL", "http://localhost:8000")
 
@@ -57,3 +60,21 @@ def fastapi_client(fastapi_url: str):
     """Klient HTTP do uslugi FastAPI z ustawionym base_url."""
     with httpx.Client(base_url=fastapi_url, timeout=30) as c:
         yield c
+
+
+@pytest.fixture
+def llm_client() -> LLMClient:
+    """Realny klient LLM z konfiguracji, NOWY na kazdy test; `fake` albo niekompletna konfiguracja -> SKIP.
+
+    Nie `scope="module"`: `AsyncOpenAI` wiaze pule polaczen z petla zdarzen pierwszego zadania,
+    a kazdy test wola `asyncio.run` (nowa petla) — wspolny klient wywala drugi test bledem
+    „Event loop is closed" (zmierzone). Z tego samego powodu test z wieloma wywolaniami robi je
+    w JEDNYM `asyncio.run`. W usludze jest jedna petla, wiec tam klient z cache jest OK.
+    """
+    settings = get_settings()
+    if settings.llm_provider == "fake":
+        pytest.skip("LLM_PROVIDER=fake — test wymaga realnego dostawcy (openai / ollama)")
+    try:
+        return build_llm_client(settings)
+    except LLMConfigError as exc:
+        pytest.skip(f"niekompletna konfiguracja LLM: {exc}")

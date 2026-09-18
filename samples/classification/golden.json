@@ -1,0 +1,25 @@
+{
+  "opis": "Oczekiwane odpowiedzi POST /classify dla 20 pism z samples/summarization/ wobec katalog.json: grupa (id grupy albo null = pismo spoza katalogu) i stanowisko w tej grupie (id albo null = grupa pasuje, żadne stanowisko nie). Ustalone na podstawie TREŚCI pism (nie streszczeń), po temacie — pisma mają różnych adresatów i traktujemy je jak korespondencję wpływającą do jednego urzędu. Autor: Claude, bez przeglądu człowieka (decyzja 2026-09-18, krok 10 w CLAUDE.md) — znane ograniczenie: autor odpowiedzi to model tego samego rodzaju co oceniany.",
+  "pisma": [
+    {"plik": "01_skarga_na_bezczynnosc.docx",            "grupa": 20,   "stanowisko": "AU-1"},
+    {"plik": "02_wniosek_warunki_zabudowy.docx",         "grupa": 20,   "stanowisko": "AU-1"},
+    {"plik": "03_faktura_vat.docx",                      "grupa": 10,   "stanowisko": "FN-2"},
+    {"plik": "04_podanie_urlop_bezplatny.docx",          "grupa": 60,   "stanowisko": "OK-1"},
+    {"plik": "05_decyzja_podatek_od_nieruchomosci.docx", "grupa": 10,   "stanowisko": "FN-1"},
+    {"plik": "06_umowa_o_dzielo.docx",                   "grupa": null, "stanowisko": null},
+    {"plik": "07_wezwanie_do_zaplaty.docx",              "grupa": 10,   "stanowisko": "FN-2"},
+    {"plik": "08_odwolanie_od_decyzji.docx",             "grupa": 40,   "stanowisko": "OS-1"},
+    {"plik": "09_pelnomocnictwo.docx",                   "grupa": null, "stanowisko": null},
+    {"plik": "10_protokol_odbioru_robot.docx",           "grupa": 50,   "stanowisko": "IZ-2"},
+    {"plik": "11_wypowiedzenie_umowy_najmu.docx",        "grupa": 30,   "stanowisko": "GN-2"},
+    {"plik": "12_zapytanie_ofertowe_audyty.docx",        "grupa": 50,   "stanowisko": "IZ-1"},
+    {"plik": "13_oferta_handlowa_bms.docx",              "grupa": 50,   "stanowisko": "IZ-1"},
+    {"plik": "14_reklamacja_konsumencka.docx",           "grupa": null, "stanowisko": null},
+    {"plik": "15_zaswiadczenie_o_zatrudnieniu.docx",     "grupa": 60,   "stanowisko": "OK-1"},
+    {"plik": "16_notatka_sluzbowa_awaria.docx",          "grupa": 30,   "stanowisko": null},
+    {"plik": "17_uchwala_wspolnoty.docx",                "grupa": 30,   "stanowisko": "GN-3"},
+    {"plik": "18_wniosek_informacja_publiczna.docx",     "grupa": 60,   "stanowisko": "OK-2"},
+    {"plik": "19_zawiadomienie_zmiana_rachunku.docx",    "grupa": 10,   "stanowisko": "FN-2"},
+    {"plik": "20_wniosek_przeksztalcenie_uw.docx",       "grupa": 30,   "stanowisko": "GN-1"}
+  ]
+}
