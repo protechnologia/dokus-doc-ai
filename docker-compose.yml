@@ -43,7 +43,7 @@ services:
       LLM_BASE_URL: "${LLM_BASE_URL:-}"
       LLM_MODEL: "${LLM_MODEL:-}"
       LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-60}"
-      # --- Summaryzacja ---
+      # --- Okno modelu (summaryzacja i klasyfikacja) + limit streszczenia ---
       LLM_MAX_INPUT_CHARS: "${LLM_MAX_INPUT_CHARS:-90000}"
       LLM_MAX_OUTPUT_TOKENS_SUMMARY: "${LLM_MAX_OUTPUT_TOKENS_SUMMARY:-600}"
       # --- Klasyfikacja ---

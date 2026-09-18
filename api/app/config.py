@@ -54,13 +54,15 @@ class Settings(BaseSettings):
     llm_model: str | None = None         # wymagany dla 'openai'/'ollama', np. "gpt-4o-mini" / tag Bielika
     llm_timeout_seconds: float = 60.0    # timeout wolania LLM [s]
 
-    # --- Summaryzacja (domena: app.summarization, krok 2.4) ---
-    # Strażnik okna kontekstu modelu: górny limit ZNAKÓW tekstu wysyłanego do LLM (razem ze
-    # znacznikami pominięcia). Powyżej — początek / środek / koniec w proporcjach z żądania
-    # (`TextTruncator`) + log + metadane `truncated`/`sent_chars`/`parts` (truncacja POD OKNO
-    # MODELU, co innego niż MAX_OCR_PAGES z ekstrakcji). Liczony w znakach (odporny na zmianę modelu/
-    # tokenizera). Domyślnie 90 000 — spójnie z MAX_OCR_PAGES=30 (~3000 znaków/stronę); pod
-    # mniejszy model (Bielik, ~32k tok.) obniżyć (patrz README → „Spójność limitów pipeline'u").
+    # --- Okno modelu (summaryzacja i klasyfikacja) ---
+    # Okno modelu w ZNAKACH (niezależne od tokenizera w kodzie). Summaryzacja (`TextTruncator`):
+    # dłuższy TEKST dokumentu jest cięty — początek / środek / koniec + log + metadane
+    # `truncated`/`sent_chars`/`parts` (truncacja pod okno modelu, co innego niż MAX_OCR_PAGES).
+    # Klasyfikacja (`ClassificationService`): dłuższy CAŁY prompt -> 413, nigdy cięcie (ucięcie opcji
+    # zmienia zbiór wyboru). Rezerwy na odpowiedź kod nie odejmuje — dobór: (okno − prompt systemowy −
+    # `llm_max_output_tokens_summary`) × znaki/token modelu (Bielik ~1,65, OpenAI ~2,7; README „Okno
+    # modelu ≠ okno…"). Domyślne 90 000 spójne z MAX_OCR_PAGES=30, ale przy `num_ctx` Ollamy 4096 NIE
+    # chroni klasyfikacji (Ollama po cichu utnie prompt razem z instrukcją o OPT-00).
     llm_max_input_chars: int = 90_000
     # Górny limit długości streszczenia (tokeny, `max_tokens` wywołania). Typowe streszczenie
     # pięciu pól to ~300 tokenów. Ucięcie limitem jest dziś CICHE (tekst, nie JSON — brak flagi);

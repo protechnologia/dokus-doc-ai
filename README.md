@@ -1,6 +1,6 @@
 # dokus-doc-ai
 
-Warstwa AI dla obiegu dokumentów DOKUS firmy Tensoft. Obsługuje ekstrakcję treści (w tym OCR) z różnorodnych plików (np. PDF, DOCX, JPG) oraz jej streszczanie za pomocą LLM (komercyjne API w chmurze, np. OpenAI, lub lokalny Bielik przez Ollama). Usługa jest całkowicie niezależna od systemu obiegu dokumentów i może być wykorzystana również do innych celów, choć jej prompty są zoptymalizowane pod zadania typowe dla obiegów, czyli dekretację i akceptację dokumentów.
+Warstwa AI dla obiegu dokumentów DOKUS firmy Tensoft. Obsługuje ekstrakcję treści (w tym OCR) z różnorodnych plików (np. PDF, DOCX, JPG) oraz jej streszczanie za pomocą LLM (komercyjne API w chmurze, np. OpenAI, lub lokalny Bielik przez Ollama), a także klasyfikację dokumentu na podstawie streszczeń: wybór jednej opcji z przekazanej listy (np. wydziału, potem stanowiska) albo żadnej. Usługa jest całkowicie niezależna od systemu obiegu dokumentów i może być wykorzystana również do innych celów, choć jej prompty są zoptymalizowane pod zadania typowe dla obiegów, czyli dekretację i akceptację dokumentów.
 
 ## Stack
 
@@ -87,9 +87,9 @@ dekretację, wyłącznie tych obecnych w piśmie. Akapitu otwierającego **nie m
 (tekst promptu: [api/app/prompt/summary_system.md](api/app/prompt/summary_system.md); uzasadnienie
 i pomiary: komentarz na początku tego pliku).
 
-> Jakość **treści** nie jest dziś niczym mierzona. Model potrafi wypełnić pole, którego pismo nie
-> zawiera, albo pomylić semantykę pól (np. wpisać podstawę prawną w „Termin / data"). Patrz TODO
-> nr 5 w [CLAUDE.md](CLAUDE.md).
+> Jakość **treści** zmierzono dotąd raz (golden set 20 pism, ocena LLM-as-judge) — stałego pomiaru
+> nie ma. Model potrafi wypełnić pole, którego pismo nie zawiera, albo pomylić semantykę pól (np.
+> wpisać podstawę prawną w „Termin / data"). Patrz TODO pkt 9 w [CLAUDE.md](CLAUDE.md).
 
 ## Uruchomienie
 
@@ -159,7 +159,7 @@ Zmienne wykorzystywane przez **logikę aplikacji**:
 | `LLM_MODEL` | — | Nazwa modelu: `gpt-4o-mini`, tag Ollamy, `id` modelu z Open WebUI (wymagana dla `openai` i `ollama`). |
 | `LLM_BASE_URL` | — | Własny endpoint zgodny z API OpenAI. Ścieżka zależy od dostawcy: Ollama → `.../v1`, Open WebUI → `.../ollama/v1`. Wymagany dla `ollama`, opcjonalny dla `openai`. |
 | `LLM_TIMEOUT_SECONDS` | `60` | Limit czasu wywołania LLM. Usługa nie ponawia wywołań, więc po jego przekroczeniu od razu zwraca `504`. |
-| `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` i `POST /extract-and-summarize`. Ustawienie należy dostosować do rozmiaru okna kontekstu modelu lub do optymalizacji kosztów. |
+| `LLM_MAX_INPUT_CHARS` | `90000` | Okno modelu w znakach. `POST /summarize` i `POST /extract-and-summarize`: dłuższy tekst dokumentu jest skracany. `POST /classify`: dłuższy cały prompt (prompt systemowy + streszczenia + opcje) jest odrzucany (`413`). Dobór: patrz „Okno modelu ≠ okno, które dostaniesz”. |
 | `LLM_MAX_OUTPUT_TOKENS_SUMMARY` | `600` | Limit długości streszczenia w tokenach (`POST /summarize`, `POST /extract-and-summarize`). Odpowiedź zajmuje miejsce w oknie modelu obok wejścia — po zmianie przelicz `LLM_MAX_INPUT_CHARS`. |
 | `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` | `400` | Limit długości odpowiedzi modelu w tokenach przy `POST /classify`. Za niski urywa odpowiedź (`invalid_response`, w logu `completion_tokens` równe limitowi). |
 
@@ -177,7 +177,7 @@ Dostępne endpointy:
 | `POST /extract` | Czysta ekstrakcja: plik → tekst + metadane. |
 | `POST /summarize` | Czysta summaryzacja: tekst → streszczenie. |
 | `POST /extract-and-summarize` | Pełny pipeline: plik → tekst → streszczenie. |
-| `POST /classify` | Wybór jednej opcji z listy (albo żadnej) na podstawie streszczeń. **W przygotowaniu.** |
+| `POST /classify` | Wybór jednej opcji z listy (albo żadnej) na podstawie streszczeń. |
 
 Każda odpowiedź niesie nagłówek `X-Request-ID` (propagowany z żądania albo generowany) —
 ten sam identyfikator trafia do logów, co ułatwia korelację.
@@ -496,8 +496,8 @@ curl -X POST http://localhost:8000/extract-and-summarize \
 
 ### `POST /classify`
 
-> **Status:** kontrakt zamrożony (potwierdzony przez konsumenta 2026-09-16). Endpoint nie jest
-> jeszcze zaimplementowany (TODO pkt 1 w [CLAUDE.md](CLAUDE.md)).
+> **Status:** kontrakt zamrożony (potwierdzony przez konsumenta 2026-09-16) — zmiany tylko za zgodą
+> obu stron.
 
 Wybór **jednej opcji z przekazanej listy albo żadnej** na podstawie streszczeń dokumentu. Usługa
 nie zna znaczenia opcji: wszystko, co model o nich wie, pochodzi z pól `name`, `description`
@@ -748,7 +748,7 @@ limit znaków tekstu przekazywanego do LLM.
 | `MAX_UPLOAD_BYTES` | 20 MiB | Maksymalny rozmiar zdekodowanego pliku. Sprawdzany na zdekodowanych bajtach, przed kontaktem z Apache Tika. Powyżej → `413`. |
 | `MAX_OCR_PAGES` | 30 | Maksymalna liczba stron PDF przekazywanych do Apache Tika. Dłuższy PDF jest obcinany do pierwszych N stron przed wysłaniem (ochrona przed kosztownym OCR). |
 | Próg PUA | 30% | Udział znaków Private Use Area w warstwie tekstowej, powyżej którego warstwa jest uznawana za wadliwą i wymuszany jest OCR-fallback (`ocr_only`). |
-| `LLM_MAX_INPUT_CHARS` | 90 000 | Maksymalna liczba znaków tekstu przekazywanego do LLM (`POST /summarize` i `POST /extract-and-summarize`). Dłuższy tekst jest skracany do początku, środka i końca dokumentu (proporcje `head_percent`/`tail_percent`) ze znacznikami pominięcia, liczonymi do limitu (dopasowanie do okna kontekstu). |
+| `LLM_MAX_INPUT_CHARS` | 90 000 | Okno modelu w znakach. `POST /summarize` i `POST /extract-and-summarize`: dłuższy tekst jest skracany do początku, środka i końca dokumentu (proporcje `head_percent`/`tail_percent`) ze znacznikami pominięcia, liczonymi do limitu. `POST /classify`: dłuższy cały prompt jest **odrzucany** (`413`), nie skracany — ucięcie listy opcji zmieniłoby zbiór wyboru. |
 
 `MAX_UPLOAD_BYTES`, `MAX_OCR_PAGES` i `LLM_MAX_INPUT_CHARS` ustawia się przez ENV (sekcja
 „Konfiguracja"). Próg PUA jest wartością wewnętrzną komponentu `PuaDetector` (nie ENV);
@@ -818,12 +818,24 @@ Skutki są ciche i mylące:
   (potwierdzone: pismo na 30 000 znaków → ogólny artykuł na temat, z faktami spoza dokumentu).
 - Nasza flaga `truncated` tego **nie wykryje**. Mówi wyłącznie o `LLM_MAX_INPUT_CHARS`, czyli
   o cięciu po naszej stronie. Cięcie po stronie Ollamy raportowane jest jako `truncated: false`.
-- Przy `num_ctx = 4096` realne wejście pod dokument to ~3 100 tokenów ≈ **8 500 znaków ≈ 3 strony**
-  (4 096 − ~330 na prompt systemowy − 600 na odpowiedź, `LLM_MAX_OUTPUT_TOKENS_SUMMARY`).
+- `POST /classify` przy za małym oknie traci instrukcję o pozycji „brak dopasowania”, a wymuszona
+  struktura odpowiedzi i tak zwróci którąś etykietę — wynik wygląda na poprawne `matched`.
+  Odrzucenie `413` chroni tylko wtedy, gdy `LLM_MAX_INPUT_CHARS` odpowiada realnemu oknu:
+  **domyślne 90 000 przy `num_ctx = 4096` nie chroni** — obniż limit albo podnieś okno.
+- Przy `num_ctx = 4096` realne wejście pod dokument to ~3 100 tokenów (4 096 − ~330 na prompt
+  systemowy − 600 na odpowiedź, `LLM_MAX_OUTPUT_TOKENS_SUMMARY`). W znakach zależy to od tokenizera:
+  ≈ **8 500 znaków** przy ~2,7 znaku na token (modele OpenAI), ale Bielik liczy gęściej — na
+  prompcie klasyfikacji zmierzono ~1,65 znaku na token, czyli ≈ **5 000 znaków**.
+
+**Jak dobrać `LLM_MAX_INPUT_CHARS`:** okno obejmuje wejście **i** odpowiedź, a usługa nie odejmuje
+odpowiedzi sama. Licz pod `POST /summarize`: (okno − prompt systemowy −
+`LLM_MAX_OUTPUT_TOKENS_SUMMARY`) × znaki na token Twojego modelu. `POST /classify` zmieści się
+wtedy z zapasem, o ile `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` ≤ `LLM_MAX_OUTPUT_TOKENS_SUMMARY`.
 
 **Jak sprawdzić, ile naprawdę dostajesz:** pole `usage.prompt_tokens` w odpowiedzi
-`POST /summarize`. Wyślij tekst zdecydowanie dłuższy niż okno; jeżeli licznik zatrzyma się na
-okrągłej potędze dwójki (4096, 8192) zamiast rosnąć — to jest twój sufit.
+`POST /summarize` (albo `metadata.usage` w `POST /classify`). Wyślij tekst zdecydowanie dłuższy niż
+okno; jeżeli licznik zatrzyma się na okrągłej potędze dwójki (4096, 8192) zamiast rosnąć — to jest
+twój sufit. Z tych samych liczb policzysz znaki na token dla swojego modelu.
 
 **Jak podnieść:** endpoint zgodny z OpenAI (`/v1`, także `/ollama/v1` w Open WebUI) **nie
 przyjmuje** `num_ctx` w żądaniu — tego pola nie ma w schemacie OpenAI. Okno ustawia się po
@@ -852,6 +864,12 @@ mierząc samo wczytywanie promptu, można nie zauważyć problemu.
 ```bash
 curl http://localhost:9998/tika    # serwer Tika żyje
 curl http://localhost:8000/health  # API żyje; zwraca też status zależności (tika)
+
+# klasyfikacja (na `fake` zawsze pierwsza opcja; na realnym modelu oczekiwane id 21):
+curl -X POST http://localhost:8000/classify -H 'Content-Type: application/json' \
+  -d '{"summaries": ["• Typ pisma: skarga\n• Czego dotyczy: zawyżony rachunek operatora"],
+       "options": [{"id": 21, "name": "Skargi konsumenckie", "description": "Skargi konsumentów na dostawców usług."},
+                   {"id": 22, "name": "Rynek pocztowy", "description": "Sprawy operatorów pocztowych."}]}'
 ```
 
 ### Testy
@@ -872,8 +890,10 @@ odpowiada, że ekstrakcja natywna z DOCX zwraca tekst z polskimi znakami oraz ż
 skanu PNG po polsku poprawnie odczytuje ą, ć, ż, ł… (czyli że pakiet językowy `pol`
 działa). Pliki testowe są generowane w locie.
 
-Testy FastAPI sprawdzają `/health` (kształt odpowiedzi, nagłówek `X-Request-ID`, status
-zależności Tiki). Gdy usługa jest niedostępna, jej testy są pomijane (skip), nie failują.
+Testy FastAPI sprawdzają endpointy przez działający kontener: `/health` (kształt odpowiedzi,
+nagłówek `X-Request-ID`, status zależności Tiki) oraz kontrakt pozostałych endpointów — przy
+`/classify` sam kształt odpowiedzi, niezależnie od dostawcy (trafność sprawdza golden set). Gdy
+usługa jest niedostępna, jej testy są pomijane (skip), nie failują.
 
 Test LLM (`integration_llm`) robi jedno minimalne wywołanie realnego dostawcy (OpenAI),
 by potwierdzić, że klucz i mapowanie odpowiedzi działają — pomijany, gdy `LLM_PROVIDER`
@@ -882,6 +902,14 @@ nie jest `openai` lub brak klucza.
 Testy promptów (`integration_llm`) wysyłają do realnego modelu oczywiste przypadki.
 Klasyfikacja: dopasowanie do opcji i dokument spoza wszystkich opcji. Streszczenie: typ pisma
 i nadawca jednoznacznego wniosku. Działają na `openai` i `ollama`, pomijane przy `fake`.
+
+Golden set klasyfikacji (`integration_llm`, `test_classification_service.py`): 20 pism
+z `samples/summarization/` wobec syntetycznego katalogu urzędu z `samples/classification/`, dwa
+szczeble (grupa, potem stanowisko), próg trafności 80% na każdym. Streszczenia są zamrożone
+w `samples/classification/summaries.json` — po zmianie promptu streszczeń albo ekstrakcji wygeneruj
+je ponownie (`python samples/classification/build_summaries.py`, przy działającej usłudze).
+Raport pomyłek z uzasadnieniem modelu: `pytest -s`.
+
 Ollama z hosta:
 
 ```bash

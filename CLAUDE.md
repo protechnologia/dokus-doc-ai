@@ -2,7 +2,8 @@
 
 Warstwa AI dla obiegu dokumentów (ESOD) **DOKUS**: automatyczna ekstrakcja treści
 dokumentu i jego streszczenie, tak aby osoba dekretująca od razu wiedziała, czego
-dokument dotyczy.
+dokument dotyczy — oraz klasyfikacja (dekretacja bez udziału człowieka: wybór grupy,
+potem stanowiska; gdy model zawiedzie, dokument wraca do dekretacji ręcznej).
 
 Ten plik = orientacja pod dalszy rozwój: zasady, których nie łamać, jak zbudowana jest
 logika (gdzie co dokładać), trwałe decyzje i pułapki oraz co świadomie poza zakresem.
@@ -11,7 +12,9 @@ Stack, kontrakt API (endpointy, I/O, kody błędów) i procedury uruchomienia: *
 ## Cel
 
 DOKUS przesyła dokument w oryginalnej formie → system wyciąga tekst (również OCR ze
-skanów) → LLM generuje streszczenie → wynik wraca do DOKUS.
+skanów) → LLM generuje streszczenie → wynik wraca do DOKUS. Osobno DOKUS przesyła streszczenia
+dokumentu i listę opcji (grupy albo stanowiska) → LLM wybiera jedną opcję albo żadną → wynik
+wraca do DOKUS (dwa szczeble = dwa żądania).
 
 ## Zasady naczelne (NIE łamać bez wyraźnej decyzji)
 
@@ -44,6 +47,13 @@ DOKUS → FastAPI
           ├─ generowanie streszczenia (LLM przez LLMClient)
           │
           └─ zwróć wynik do DOKUS
+
+DOKUS → FastAPI (/classify: streszczenia + opcje)
+          │
+          ├─ etykiety OPT-1…OPT-n + OPT-00, prompt, schemat odpowiedzi
+          ├─ wybór (LLM przez LLMClient, wymuszony JSON)
+          │
+          └─ zwróć wynik (matched / no_match / invalid_response + audyt) do DOKUS
 ```
 
 Tika wystawia REST (`tika-server`), wykrywa typ pliku i jednym wywołaniem obsługuje
@@ -83,7 +93,9 @@ ustalić z logów bez dostępu do klienta.
     Ollamę — API zgodne z OpenAI; Azure świadomie odłożony do osobnego klienta). Fabryka
     `get_llm_client()` po `LLM_PROVIDER` (`fake`/`openai`/`ollama`); brak klucza/modelu/base_url →
     `LLMConfigError` (czytelny błąd od razu). Wyjątki: hierarchia `LLMError`. `temperature=0`.
-    LLM **nie** jest pingowany w `/health`.
+    LLM **nie** jest pingowany w `/health`. `complete(json_schema=…)` → `response_format` typu
+    `json_schema` (strict), jedna ścieżka dla OpenAI i Ollamy; `LLMResult.text` niesie wtedy SUROWY
+    JSON (parsuje wołający). Interfejs nie wie nic o klasyfikacji — dostaje gotowy schemat.
     **Bez ponowień SDK (`max_retries=0`).** SDK `openai` domyślnie (2) po cichu ponawia timeout,
     429 i 5xx: realny limit czasu wynosił ~3 × `LLM_TIMEOUT_SECONDS`, a DOKUS ponawiał żądania już
     ponowione u nas. Ponawia wyłącznie konsument, więc stała w kodzie, nie ENV. Koszt: chwilowe
@@ -131,8 +143,13 @@ ustalić z logów bez dostępu do klienta.
       proporcji (422) we wspólnej bazie `TruncationParams` modeli żądań.
   - `PipelineService` — orkiestrator `extract` → `summarize`; **bez własnego I/O**; odpowiedź
     z zagnieżdżonymi metadanymi obu etapów.
+  - `ClassificationService` — wybór jednej opcji z listy albo żadnej (etykiety `OPT-n` + `OPT-00`,
+    prompt, schemat, ścisły parser); każda odpowiedź modelu to wynik, nie wyjątek. Decyzje, mechanizm
+    i jakość: sekcja „Klasyfikacja" niżej.
 - **DI (kontrast):** `ExtractionService` dostaje `TikaClient` **inline** (jeden silnik);
-  `SummarizationService`/`PipelineService` biorą `LLMClient` z **fabryki** (silnik wymienialny).
+  `SummarizationService` / `PipelineService` / `ClassificationService` biorą `LLMClient` z **fabryki**
+  (silnik wymienialny). Limity z `Settings` przekazuje funkcja DI routera — przepływ pilnują sekcje
+  „DI" w testach routerów (testy HTTP podstawiają cały serwis, więc go nie widzą).
 
 **Prompty — teksty w `app/prompt/`, klasy w domenach** (2026-09-17). Tekst promptu to plik
 `app/prompt/<domena>_<rola>.md`; klasa, która go wypełnia, leży w pakiecie domeny — **plik na
@@ -164,7 +181,11 @@ rozjazd placeholderów / zły komentarz wywala start.
 **Limity — trzy bramki tego samego dokumentu** (spójność ważna, README „Spójność limitów
 pipeline'u"): `MAX_UPLOAD_BYTES` (→ 413) → `MAX_OCR_PAGES` → `LLM_MAX_INPUT_CHARS`. Rozróżnienie:
 **limit zakresu ekstrakcji** (stron, zależny od dokumentu) ≠ **truncacja pod okno modelu**
-(znaków, zależna od LLM).
+(znaków, zależna od LLM). `LLM_MAX_INPUT_CHARS` = okno modelu w znakach także dla `/classify`, ale
+tam jako **odrzucenie (413) całego promptu, nie truncacja** (sekcja „Klasyfikacja"). Rezerwy na
+odpowiedź żaden endpoint nie odejmuje w kodzie — dobór pod `/summarize` (okno − prompt systemowy −
+`LLM_MAX_OUTPUT_TOKENS_SUMMARY`, × znaki/token modelu: Bielik ~1,65, OpenAI ~2,7); `/classify`
+zmieści się wtedy z zapasem, o ile `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` ≤ `LLM_MAX_OUTPUT_TOKENS_SUMMARY`.
 
 **Gotcha configu:** `docker-compose` dla niezdefiniowanego `${VAR:-}` wstawia **pusty string**,
 nie brak zmiennej → walidator `_puste_na_none` w `Settings` normalizuje pusty/biały ENV pól
@@ -178,6 +199,120 @@ zamrożone stare wartości: edycja `.env` przestaje cokolwiek zmieniać, a `up -
 ze starym ENV. Stąd zasada: **weryfikuj `docker compose config`, nie zawartość `.env`** — `config`
 pokazuje wynik interpolacji, czyli to, co naprawdę trafi do kontenera (procedura w README).
 Do odczytu jednej zmiennej bez skutków ubocznych: `V=$(grep -oP '^VAR=\K.*' .env)`.
+
+## Klasyfikacja — `POST /classify` (dekretacja bez człowieka)
+
+Zgłoszenie DOKUS „[UKE][AI] Inteligentna dekretacja": dokument przychodzący ma **bez udziału
+człowieka** trafić na stanowisko merytoryczne; gdy model zawiedzie — dekretacja ręczna, jak dziś
+(**etapu zatwierdzania nie ma**). Szczeble (grupa → stanowisko) prowadzi DOKUS: dwa żądania do tego
+samego endpointu. **Usługa nie zna pojęć „grupa" ani „stanowisko"** — dostaje płaską listę opcji
+(`id` nieprzezroczysty: int albo string; `description` i `examples` pisze urząd) oraz streszczenia
+plików dokumentu (wynik `/summarize`). Jedno żądanie = jedno wywołanie modelu = jeden wybór.
+Kontrakt **zamrożony 2026-09-16** (README „POST /classify" + `models/classify.py`; zmiany tylko za
+zgodą obu stron). Zbudowane w 11 krokach (TODO pkt 1, 2026-09-16…18) — znaczniki „krok N (x)"
+w kodzie odnoszą się do punktów poniżej.
+
+**Kontrakt — z kodu nie wynika:**
+- **(krok 1 (f)) Każda odpowiedź modelu to `200` + `outcome`** (`matched` / `no_match` /
+  `invalid_response`); **5xx = odpowiedzi modelu nie było** — kod HTTP wyznacza politykę ponowień
+  DOKUS-a bez czytania ciała. Nie „poprawiać" `invalid_response` na `502`.
+- **(krok 1 (g)) Za długi prompt → 413, nigdy ucinanie** (ucięcie opcji zmienia zbiór wyboru).
+  Budżet = CAŁY prompt (systemowy + użytkownika) wobec `LLM_MAX_INPUT_CHARS`, bez rezerwy na
+  odpowiedź (znaki vs tokeny; rezerwę odejmuje się przy doborze — README „Okno modelu…"). **Pułapka:**
+  Ollama sama ucina za długi prompt od początku, razem z instrukcją o `OPT-00`, a `enum` i tak wymusi
+  etykietę → cichy `matched`. Straż działa tylko przy `LLM_MAX_INPUT_CHARS` dobranym do `num_ctx`.
+- **Oba prompty, surowa odpowiedź, model i `usage` wracają zawsze** (dziennik audytu DOKUS-a) — nie
+  tryb debug. Etykieta modelu (`label`) nie wychodzi — wewnętrzna, audyt ma `raw_response`.
+- **(krok 8) Walidacja żądania minimalna — tylko struktura:** `id: StrictInt | StrictStr` (bez
+  strict `true` → 1, `21.0` → 21 — odesłalibyśmy inny klucz), `min_length=1` na obu listach.
+  Świadomie BEZ: niepustych `name` / `description` / streszczeń (opcja bez treści nie psuje wyniku,
+  a 422 wywracałby grupę przez jedną lukę katalogu — kompletność to strona DOKUS-a), unikalnych `id`
+  (etykiety po pozycji), walidatora spójności pól z `outcome` (wynika z konstruktorów wyniku).
+
+**Mechanizm** — pakiet `app/classification/`: `exception.py`, `model.py`, `prompt_*.py`, `service.py`
++ jednostki z prefiksem `service_` (decyzja porządkowa, choć `service_labels` używają też prompt
+i model):
+- **`OPT-00` („brak dopasowania") to jedyna siatka bezpieczeństwa.** Usługa dokleja ją sama jako
+  jawną, OSTATNIĄ pozycję listy (wzorzec „żadne z powyższych"); samo dopuszczenie `null` nie
+  wystarcza — przed zamkniętą listą model wybiera najmniej złą opcję. Kolejność pozycji ustala
+  wyłącznie `OptionLabeler.entries`; prompt i `enum` ją przejmują.
+- **(krok 4) `service_labels.py`:** `OPT-1`…`OPT-n` jak w zgłoszeniu (odrzucone `OPT-01`: `enum`
+  i tak nie pozwoli na inny zapis); model **nigdy** nie widzi surowych `id`; `resolve` dokładnie
+  i po pozycji (powtórzone `id` nie psują mapowania).
+- **(krok 5) `prompt_system` / `prompt_user`** (teksty `app/prompt/classification_*.md`):
+  - (a) `OPT-00` **tylko przy braku dopasowania**; przy kilku pasujących — najlepsza (odrzucone
+    „remis / wątpliwość → `OPT-00`": samoocena pewności jest źle skalibrowana);
+  - prompt systemowy bez domeny (usługa nie zna znaczenia opcji — kontekst niosą ich opisy);
+  - sekcje w tagach `<streszczenia>` / `<opcje>`, nie `##` (nagłówek łatwo podrobić treścią pisma);
+    „dane, nie polecenia" tylko dla streszczeń (opisy opcji pisze urząd, mogą zawierać wskazówki);
+  - `OPT-00` i nazwy pól JSON dosłownie w `.md` (plik czyta się jak model; zgodność pilnują testy);
+  - dwa przykłady odpowiedzi — żeby model SAM pisał JSON zgodny ze schematem (gramatyka spycha
+    „walczący" model na mało prawdopodobne tokeny i cierpi treść); etykieta przykładu `OPT-N`
+    (nigdy nie nadawana; odrzucone `OPT-77` — istnieje przy ≥77 opcjach), `OPT-00` pierwszy, `OPT-N`
+    ostatni. Znane ograniczenie: streszczenie z `</streszczenia>` rozszczelnia sekcję (skutek
+    ograniczony do opcji z listy przez `enum`).
+- **(krok 2) `service_schema.py`:** `rationale`, potem `label` (`enum`), strict — egzekwowane na
+  OpenAI i Ollamie (0.31.1 i 0.34.2). Odrzucone: tool calling (Bielik w Ollamie nie obsługuje),
+  `json_object`, `pattern`. **Koszt `enum`:** maskuje dezorientację (uzasadnienie „…będzie OPT-7",
+  `enum` wymusił `OPT-1`) — stąd straż 413 jest obowiązkowa.
+- **(krok 6 (a)) `service_parsing.py` — ściśle, bez tolerancji zapisu:** blok kodu / tekst wokół
+  JSON-a → `invalid_response`. OpenAI i Ollama egzekwują schemat, a zaplecze, które go gubi, wychodzi
+  od pierwszego żądania, zamiast zostać przykryte; tolerancję dokładać tylko na podstawie zmierzonych
+  surowych odpowiedzi. Powtórzony klucz → błąd (`json.loads` po cichu bierze ostatni). Struktura,
+  nie treść.
+- **(krok 7) `service.py` + `model.py`:** wady odpowiedzi → wynik `invalid_response` z przyczyną;
+  propagują tylko błędy „odpowiedzi nie było" (`LLMError`, `PromptTooLongError`).
+  `ClassificationResult` składają wyłącznie `matched` / `no_match` / `invalid` (każdy bierze tylko
+  pola swojego wariantu). Log bez treści pisma: INFO wynik + etykieta; WARNING przy
+  `invalid_response` z przyczyną i `completion_tokens` / limit (inaczej porażka ginie za `-> 200`).
+- **Limity:** (krok 3) wspólny `LLM_TIMEOUT_SECONDS` (klasyfikacja nie trwa dłużej niż streszczenie;
+  ostrzejszy dałby fałszywe 504 na wolnym sprzęcie). (krok 7 (a)) `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` =
+  400 z ENV (liczba tokenów zależy od tokenizera = od wdrożenia). **Przy `OPT-00` model wylicza
+  w uzasadnieniu odrzucone opcje** (~5 tokenów na nazwę; długość rośnie z katalogiem):
+  `gpt-4o-mini` do 118, Bielik 11B do 241 przy 7 opcjach — na Bieliku 400 to zapas tylko ~1,7×.
+  Urwany JSON przy `temperature=0` urwie się tak samo przy każdym ponowieniu; sygnał: WARNING
+  `completion_tokens 400/400`.
+- `fake` przy schemacie wybiera pierwszą wartość `enum` → `matched` z `id` pierwszej opcji.
+- **Świadomie NIE robimy:** uwierzytelniania (izolacja sieciowa; TODO pkt 5 zostaje blokerem
+  wdrożenia); pola pewności (samoocena źle skalibrowana — gdy `OPT-00` nie wystarczy: logprobs albo
+  człowiek w pętli, nie próg); ponowień w usłudze (robi je task DOKUS-a); endpointu schodzącego
+  samodzielnie z grupy na stanowisko; zmian promptu streszczeń (braki zgłaszać wnioskiem, TODO pkt 1).
+
+**Jakość — golden set `samples/classification/`** (kroki 10–11, 2026-09-18):
+- `katalog.json` — syntetyczny urząd miasta, 7 grup ze stanowiskami (gminny, bo pisma z
+  `samples/summarization/` są gminne; katalog w stylu UKE dałby same `no_match`), z celowymi
+  zmyłkami; `golden.json` — 20 pism, w tym 3 spoza katalogu (06, 09, 14) i 1 z grupą bez stanowiska
+  (16); `summaries.json` — **zamrożone streszczenia** (`gpt-4o-mini`; wejście stałe, pomyłka wyboru
+  nie miesza się ze zmiennością streszczeń) — `build_summaries.py` po zmianie promptu streszczeń
+  albo ekstrakcji. **Znane ograniczenie:** katalog i odpowiedzi ustalił Claude, bez przeglądu
+  człowieka (sędzia = autor, jak w TODO pkt 9); katalogu NIE poprawiamy pod wynik modelu.
+- Testy: `test_classification_service.py` — cały golden set, próg 80% osobno grupy i stanowiska
+  (decyzja 1b), stanowisko pytane w OCZEKIWANEJ grupie; `test_classification_prompt.py` — osobny,
+  bezwzględny test siatki bezpieczeństwa; `test_fastapi_classify.py` — sam kontrakt, dowolny dostawca;
+  `test_classification_golden_data.py` — spójność trzech plików danych. Klient LLM w testach
+  integracyjnych **nowy na każdy test**, a wiele wywołań — w JEDNYM `asyncio.run` (`AsyncOpenAI`
+  wiąże pulę połączeń z pętlą zdarzeń; „Event loop is closed").
+- Wyniki (dwa przebiegi na model, surowe odpowiedzi czytane; Bielik 11B Q8_0 — jednorazowo na
+  RunPodzie, dane syntetyczne; 37 wywołań = 20 grup + 17 stanowisk):
+
+  | | gpt-4o-mini (przebieg 1 / 2) | Bielik 11B (oba identyczne) |
+  |---|---|---|
+  | błędy: grupy / stanowiska | 10% / 0%, 5% / 0% | 20% / 6% |
+  | pismo na ZŁE miejsce (fałszywe dopasowanie) | 2,7% (09) / 0% | **0%** |
+  | pismo do dekretacji ręcznej (fałszywe `no_match`) | 2,7% / 2,7% | 13,5% (25% pism) |
+  | pisma spoza katalogu dopasowane | 1/3 / 0/3 | 0/3 |
+
+- **Kierunek błędów różny per model:** 11B wyłącznie fałszywe `no_match` (pismo wraca do dekretacji
+  ręcznej — bezpieczniej); `gpt-4o-mini` raz fałszywe dopasowanie (09: streszczenie zgubiło „VAT");
+  4.5B na CPU odwrotnie niż 11B — „nie pasuje do żadnej **poza OPT-7**" → `OPT-7`, a 3/6 odpowiedzi
+  różne w dwóch przebiegach: do dekretacji bez człowieka się nie nadaje.
+- **11B „przegaduje się" ku `OPT-00`:** uzasadnienie zaczyna od „żadna z opcji nie odnosi się
+  bezpośrednio…" i przytacza opis pasującej opcji BEZ fragmentu, który pasuje (18: „sprawy
+  pracownicze, **dostęp do informacji publicznej** i obsługa Rady" → „sprawy pracownicze i obsługa
+  Rady" → `OPT-00`); „bezpośrednio / dokładne" w 8/37 uzasadnień 11B, 0/37 u `gpt-4o-mini`.
+  Hipotezy i eksperymenty — TODO pkt 1.
+- 11B na GPU powtarzalny (37/37 ten sam wybór; `gpt-4o-mini` 36/37). Tokenizer Bielika ~1,65 znaku
+  na token (`gpt-4o-mini` ~2,7) na tym samym prompcie — ważne przy doborze `LLM_MAX_INPUT_CHARS`.
 
 ## Kontener `ollama` — lokalny Bielik (opcjonalny)
 
@@ -265,267 +400,36 @@ Integrację po stronie konsumenta realizuje **uniwersalny klient PHP**
 
 ## TODO — przed wdrożeniem produkcyjnym
 
-Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla urzędu), kolejność wg wagi:
+Pkt 1 = to, co zostało z klasyfikacji; dalej luki „ostatniej mili" (system dla urzędu), kolejność wg wagi:
 
-1. **[W TOKU] Endpoint klasyfikacji `POST /classify` — wybór jednej opcji z listy albo żadnej.**
-   Zgłoszenie DOKUS „[UKE][AI] Inteligentna dekretacja": dokument przychodzący ma **bez udziału
-   człowieka** trafić na stanowisko merytoryczne. Gdy model zawiedzie, dokument trafia do dekretacji
-   ręcznej, jak dziś. **Etapu zatwierdzania nie ma.** Decyzję dwuszczeblową (grupa → stanowisko)
-   prowadzi DOKUS: to dwa żądania do tego samego endpointu. **Usługa nie zna pojęć „grupa" ani
-   „stanowisko"** — dostaje płaską listę opcji (`id` nieprzezroczysty: int albo string, traktowany jak
-   klucz; `description` i `examples` pisze urząd, `examples` bywa `null`), podsumowania plików dokumentu
-   (wynik naszego `/summarize`: pismo główne + załączniki) — i nic więcej. Jedno żądanie = jedno
-   wywołanie modelu = jeden wybór.
-
-   Wymogi nośne:
-   - **`OPT-00` („brak dopasowania") to jedyna siatka bezpieczeństwa całego mechanizmu.** Usługa
-     dokleja ją zawsze sama, jako jawną pozycję listy w prompcie; nie jest wierszem katalogu DOKUS-a.
-     Samo dopuszczenie `null` w schemacie nie wystarcza: postawiony przed zamkniętą listą model
-     wybiera najmniej złą opcję i podaje ją z pewnością;
-   - model widzi krótkie etykiety (`OPT-1`…`OPT-n`, `OPT-00`), **nigdy** surowych `id` z bazy;
-   - parametry za dok. projektowym (rozdz. 3.4): `temperature=0`, `max_tokens` tylko na to, co ma
-     wrócić, limit czasu roboczo 60 s; struktura odpowiedzi wymuszona (OpenAI oraz Ollama/Bielik);
-   - odpowiedź niedającą się sparsować da się odróżnić od poprawnej (DOKUS zapisuje ją w dzienniku
-     i ponawia);
-   - **oba prompty (systemowy + użytkownika), surowa odpowiedź i model wracają zawsze** — to stały
-     element kontraktu (dziennik audytu DOKUS-a, rozdz. 5 dok. projektowego), nie tryb debug;
-   - kody błędów jak w istniejących endpointach (413/422/500/502/503/504), `X-Request-ID` jak dotąd.
-
-   **Świadomie NIE robimy (decyzje zapadły):** uwierzytelniania (izolacja sieciowa; pkt 5 zostaje
-   blokerem wdrożenia); pola pewności (samoocena modelu jest źle skalibrowana — gdy `OPT-00` nie
-   wystarczy, właściwa droga to logprobs albo człowiek z powrotem w pętli, nie próg); ponowień w usłudze
-   (robi je task DOKUS-a); endpointu schodzącego samodzielnie z grupy na stanowisko; zmian promptu
-   streszczeń (mechanizm jest jeden dla wszystkich podsumowań — braki zgłaszać wnioskiem).
-   Pierwotnie też „systematycznej oceny wyborów (golden set później)" — golden set zrobiony
-   w kroku 10 (decyzja 2026-09-18).
-
-   Kroki w kolejności wykonania; checkbox kroku = kod i testy gotowe. Decyzje, bez których kroku nie
-   da się zrobić, stoją na jego początku — też do odhaczenia.
-
-   - [x] **Krok 1. Kontrakt `POST /classify` — zamrożony 2026-09-16** (potwierdzony przez DOKUS;
-     zmiany tylko za zgodą obu stron). Źródło prawdy: README „POST /classify" + modele w
-     `api/app/models/classify.py`. Status i adnotację „W przygotowaniu" w README zdjąć po implementacji
-     (krok 12). Z kodu nie wynika:
-     - (f) **Każda odpowiedź modelu to `200` + `outcome`, 5xx = odpowiedzi modelu nie było** — kod
-       HTTP wyznacza politykę ponowień DOKUS-a bez czytania ciała. Nie „poprawiać" na `502`.
-     - (g) **Za długi prompt → 413, nigdy ucinanie** (ucięcie opcji zmienia zbiór wyboru). Pułapka:
-       Ollama sama ucina prompt od początku, razem z instrukcją o `OPT-00`, a `enum` i tak wymusi
-       etykietę → cichy `matched`. Straż działa tylko przy `LLM_MAX_INPUT_CHARS` dobranym do realnego
-       `num_ctx` (krok 12).
-
-   - [x] **Krok 2. `LLMClient` — wymuszanie struktury odpowiedzi** (2026-09-16). `complete(json_schema=…)`
-     → `response_format` typu `json_schema` (strict), jedna ścieżka w `OpenAILLMClient` dla OpenAI
-     i Ollamy. Z kodu nie wynika:
-     - **Etykieta jako `enum`, uzasadnienie przed etykietą** — zmierzone na Bieliku 4.5B (Ollama 0.31.1)
-       i `gpt-4o-mini`: schemat egzekwowany, klucze w kolejności schematu. Odrzucone: tool calling
-       (Bielik w Ollamie go nie obsługuje), `json_object` (nie gwarantuje pól ani kolejności),
-       `pattern` zamiast `enum`.
-     - **Świadomy koszt `enum`:** maskuje dezorientację modelu (w teście złośliwym uzasadnienie kończyło
-       się „…będzie OPT-7", a `enum` wymusił `OPT-1`). Stąd straż długości promptu (krok 1 (g)) jest
-       obowiązkowa, a ścieżka nieznanej etykiety w parserze zostaje tylko dla zapleczy, które schematu
-       nie egzekwują.
-     - `fake` przy schemacie wybiera **pierwszą** wartość `enum`. Przy `OPT-00` na końcu (krok 4) to
-       `OPT-1`, więc na `fake` wychodzi `matched` z `id` pierwszej opcji (krok 10).
-
-   - [x] **Krok 3. Limit czasu i ponowienia** (2026-09-17). Z kodu nie wynika:
-     - **Bez osobnego limitu dla klasyfikacji — wspólny `LLM_TIMEOUT_SECONDS`.** Klasyfikacja nie trwa
-       dłużej niż streszczenie na tym samym modelu (wejście pod tym samym sufitem `LLM_MAX_INPUT_CHARS`,
-       odpowiedź ~100 tokenów zamiast ~300), więc limit dobrany pod streszczenia wystarcza. Ostrzejszy
-       dałby tylko szybsze 504, a na wolnym sprzęcie fałszywe (Bielik 4.5B na CPU: 39–59 s na pismo).
-       Parametr `timeout` w `complete()` dołożyć dopiero przy realnej potrzebie.
-     - Przy okazji wyszły **ukryte ponowienia SDK** — wyłączone (`max_retries=0`), decyzja i koszt
-       w sekcji `fastapi` (`LLMClient`).
-
-   - [x] **Krok 4. Etykiety opcji — `classification/service_labels.py`** (2026-09-17). `OptionLabeler`
-     + domenowy `ClassificationOption` (domena nie importuje modeli API). Z kodu nie wynika:
-     - **`OPT-1`…`OPT-n` + `OPT-00`, jak w zgłoszeniu.** Odrzucone jednolite `OPT-01`…: obawa „model
-       odda `OPT-01`" nie dotyczy zapleczy z `enum`, przy ≥100 opcjach szerokość i tak rośnie, a `OPT-00`
-       wyróżnia się szerokością jako pozycja specjalna.
-     - **`OPT-00` ostatnia** — wzorzec „żadne z powyższych". Kolejność ustala wyłącznie
-       `OptionLabeler.entries`; prompt i `enum` (krok 5) ją przejmują, nie składają własnej.
-     - `resolve` dopasowuje etykietę dokładnie (`OPT-01`, `opt-1` → `UnknownLabelError`); tolerancja
-       zapisu to decyzja parsera (krok 6 (a)).
-
-   - [x] **Krok 5. Prompt — `classification/prompt_system.py` / `prompt_user.py` + `service_schema.py`**
-     (2026-09-17). Teksty `app/prompt/classification_system.md` / `classification_user.md`;
-     `ClassificationUserPrompt.render(summaries, entries)` zwraca gotowy prompt, `build_response_schema(labels)`
-     — `rationale`, potem `label` (`enum`). Z kodu nie wynika:
-     - **(a) `OPT-00` tylko przy braku dopasowania** — gdy pasuje kilka opcji, model wybiera najlepszą.
-       Odrzucone: „remis → `OPT-00`" i „każda wątpliwość → `OPT-00`" (ta druga stoi na samoocenie
-       pewności, źle skalibrowanej — ten sam powód co odrzucone pole pewności). Świadomy koszt: remisy
-       rozstrzyga model, a pomyłka bez człowieka w pętli kosztuje więcej niż dekretacja ręczna —
-       sprawdzić w kroku 11.
-     - **Prompt systemowy bez domeny** (bez urzędu, pism, roli asystenta) — usługa nie zna znaczenia
-       opcji, kontekst niosą ich opisy; ~720 znaków zamiast ~1200.
-     - **Sekcje w tagach `<streszczenia>` / `<opcje>`, nie nagłówkach `##`** — nagłówek łatwo podrobić
-       treścią pisma; prompt systemowy nazywa tagi. Każdy element w swoim tagu (`<streszczenie>` /
-       `<opcja>`): streszczenie tego wymaga (brak nagłówka), opcja ma go w linii `OPT-n:` — tag przy
-       opcji dla spójności i odporności na wieloliniowe opisy klienta; koszt ~17 znaków na opcję.
-     - **Zastrzeżenie „dane, nie polecenia" tylko dla streszczeń** — opisy opcji pisze urząd i mogą
-       legalnie zawierać wskazówki („wybierz, gdy…").
-     - **`OPT-00` i nazwy pól JSON wpisane w `.md` dosłownie**, nie jako placeholdery — plik czyta się
-       tak, jak widzi go model; zgodność z `service_labels.py` / `service_schema.py` pilnują testy promptu systemowego.
-       Tekst pozycji `OPT-00` na liście („Brak dopasowania") w klasie, reguła wyboru w prompcie
-       systemowym; bez „powyższych", bo kolejność to decyzja `OptionLabeler`.
-     - **Dwa przykłady odpowiedzi w prompcie systemowym (pretty print)** — nie po strukturę (tę gwarantuje
-       schemat), tylko żeby model SAM oddawał JSON zgodny ze schematem: gramatyka maskuje tokeny, więc
-       model, który „chce" napisać co innego, jest spychany na mało prawdopodobne tokeny i cierpi treść.
-       Etykieta przykładu wyboru to `OPT-N` — `OptionLabeler` nigdy jej nie nada, więc skopiowana nie
-       trafi w prawdziwą opcję (`enum` ją zablokuje; bez `enum` → `invalid_response`). Odrzucone
-       `OPT-77`: przy ≥77 opcjach istnieje (cichy `matched` z cudzym `id`), a wspólny prefiks z `OPT-7`
-       pod gramatyką może skręcić w `OPT-7`. Kolejność: `OPT-00` pierwszy, `OPT-N` ostatni (ostatni
-       przykład działa najmocniej, a `OPT-00` zawsze istnieje i ciągnie ku rezygnacji).
-     - Znane ograniczenie: streszczenie zawierające `</streszczenia>` rozszczelnia sekcję (bez
-       escapowania). Skutek ograniczony do wyboru spośród opcji z listy (`enum`).
-
-   - [x] **Krok 6. Parser odpowiedzi — `classification/service_parsing.py`** (2026-09-17). `parse_response(raw)`
-     → `ParsedResponse(rationale, label)`; każda wada → `InvalidModelResponseError`, komunikat = `error`
-     odpowiedzi. Etykiety nie rozwiązuje (zwraca dosłownie, listę zna `OptionLabeler`). Z kodu nie wynika:
-     - **(a) Ściśle, bez tolerancji zapisu** — blok kodu markdown, tekst wokół JSON-a → niepoprawny
-       JSON; `opt-3` / ` OPT-3 ` odpadają na `resolve`. OpenAI i Ollama egzekwują schemat (tolerancja
-       nigdy by się tam nie uruchomiła); zaplecze gubiące schemat (Open WebUI, krok 11) wychodzi od
-       pierwszego żądania, zamiast zostać przykryte. Tolerancję dokładać na podstawie zmierzonych
-       surowych odpowiedzi, nie zgadywanych. Odrzucone: wyłuskiwanie pierwszego obiektu z tekstu (przy
-       dwóch obiektach bierze nie ten → zły wybór bez człowieka w pętli).
-     - Z tego samego powodu **powtórzony klucz → błąd** (`json.loads` po cichu bierze ostatni).
-     - **Struktura, nie treść** (jak model API): pola nadmiarowe ignorowane, puste uzasadnienie przyjęte.
-       Pusta odpowiedź (odmowa / filtr → `""`) ma własną przyczynę zamiast mylącego „Expecting value".
-
-   - [x] **Krok 7. `ClassificationService` — `classification/service.py`** (2026-09-18). Wynik
-     domenowy `ClassificationResult` w `model.py` (trzy konstruktory: `matched` / `no_match` /
-     `invalid`, każdy bierze tylko pola swojego wariantu), wyjątki pakietu w `exception.py`.
-     **Układ plików pakietu:** `exception.py`, `model.py`, `prompt_*.py`, `service.py` + jednostki
-     z prefiksem `service_` (`service_labels.py`, `service_parsing.py`, `service_schema.py`; wcześniej
-     bez prefiksu) — decyzja porządkowa, mimo że `service_labels` używają też `prompt_user` i `model`.
-     Z kodu nie wynika:
-     - **(a) `max_tokens` = 400, z ENV `LLM_MAX_OUTPUT_TOKENS_CLASSIFY`** (tak samo streszczenia:
-       `LLM_MAX_OUTPUT_TOKENS_SUMMARY` = 600, wcześniej stała w konstruktorze). Pierwotnie stała w kodzie
-       („długość wyznacza prompt"); przeniesione do ENV 2026-09-18, bo liczba tokenów tego samego tekstu
-       zależy od tokenizera modelu, czyli od wdrożenia, a limit wlicza się do okna obok
-       `LLM_MAX_INPUT_CHARS` — oba pokrętła stoją teraz obok siebie. Pomiar (`gpt-4o-mini`
-       i Bielik 4.5B, 6 pism, katalog 8 opcji, dwa przebiegi): wybór opcji 44–62 tokeny, **ale przy
-       `OPT-00` model wylicza w uzasadnieniu odrzucone opcje** (~5 tokenów na nazwę) — `gpt-4o-mini`:
-       8 opcji → 84, 14 → 118 (wszystkie nazwy), 20 → 62 („itp."); Bielik do 112. 400 ≈ 3,4 ×
-       maksimum. Urwany JSON przy `temperature=0` urwie się tak samo przy każdym ponowieniu DOKUS-a,
-       więc zapas jest tani, a za ciasny limit — nie. Sygnał: WARNING `completion_tokens 400/400`.
-     - **Budżet liczy tylko prompt, bez rezerwy na odpowiedź** — znaki vs tokeny (przelicznik zależy
-       od tokenizera), a 413 w zamrożonym kontrakcie to „prompt > `LLM_MAX_INPUT_CHARS`". Rezerwę
-       odejmuje się przy doborze `LLM_MAX_INPUT_CHARS` (krok 12).
-     - Z serwisu propagują tylko błędy „odpowiedzi nie było" (`LLMError`, `PromptTooLongError`);
-       wady odpowiedzi → wynik `invalid_response`. Log: INFO wynik + etykieta (bez uzasadnienia — cytuje
-       pismo), WARNING przy `invalid_response` z przyczyną i `completion_tokens`/limit.
-
-     **Do rozważenia (poza krokiem 7): uzasadnienie przy `OPT-00` bez wyliczania opcji.** Wyliczanie
-     nic nie wnosi do audytu (lista jest w `user_prompt`), powstaje PO decyzji („…nie pasuje do
-     żadnej z: …"), a jego długość rośnie z katalogiem bez sufitu. Prawdopodobny wyzwalacz:
-     „(przy OPT-00: dlaczego nic nie pasuje)" w `classification_system.md` — przykład `OPT-00` jest
-     krótki, a model i tak wylicza. Kierunek: sformułowanie pozytywne („jednym zdaniem: czego dotyczy
-     dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po (dwa modele, dwa przebiegi,
-     katalog 8 / 14 / 20+); potem obniżyć default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
-
-   - [x] **Krok 8. Modele API — `api/app/models/classify.py`** (2026-09-18; modele kontraktu
-     2026-09-16, mapowanie `ClassifyResponse.from_result` po kroku 7). Z kodu nie wynika:
-     - **Walidacja świadomie minimalna — tylko struktura** (jak `SummarizeRequest` / `ExtractRequest`):
-       `id: StrictInt | StrictStr` (strict, bo bez tego `true` → 1, `21.0` → 21 i odesłalibyśmy inny
-       klucz), `min_length=1` na `summaries` i `options` (pusta lista opcji → 422 to wymóg zgłoszenia),
-       bez limitów długości (budżet promptu sprawdza serwis, krok 1 (g)).
-     - **Świadomie usunięte (pierwsza wersja miała je, 40 testów → 16):** niepuste `name` /
-       `description` / elementy `summaries` (opcja bez treści nie psuje wyniku, a 422 wywracałoby
-       wywołanie dla grupy przez jedną lukę w katalogu — kompletność katalogu to strona DOKUS-a);
-       powtórzone `id` (etykiety rozwiązujemy po pozycji); walidator spójności pól z `outcome`
-       (spójność wynika z konstruktorów `ClassificationResult`, krok 7).
-     - `from_result` nie wystawia `label` — etykiety są wewnętrzne, audyt ma `raw_response`.
-
-     Testy: `test_models_classify_request.py`, `test_models_classify_response.py` (nazwy pól =
-     kontrakt, `option_id` string w JSON, nieznany `outcome`, `from_result` — trzy wyniki wg tabeli
-     z README, audyt i metadane dosłownie).
-
-   - [x] **Krok 9. Router — `api/app/routers/classify.py`** (2026-09-18). DI jak w `/summarize`
-     (klient z `get_llm_client()`, `max_prompt_chars` z `LLM_MAX_INPUT_CHARS`, `max_output_tokens`
-     z `LLM_MAX_OUTPUT_TOKENS_CLASSIFY`); `ClassifyOption` → `ClassificationOption` w kolejności
-     żądania (`_to_domain_options`); wyjątki → 413 / 500 / 502 / 503 / 504 przez `HTTPException`
-     (bez promptów w ciele). `invalid_response` to zwykłe `200` — router nie ma dla niego osobnej
-     ścieżki (krok 1 (f)). Testy `test_fastapi_classify.py` (17: trzy wyniki, domenowe opcje z typem
-     `id`, 422, mapowanie wyjątków, `LLMConfigError`, `X-Request-ID`, sekcja DI). Sprawdzian na
-     żywo (kontener, `gpt-4o-mini`): przykład z README → `matched` 21, dokument spoza opcji →
-     `no_match`, 60 000 znaków → 413, pusta lista opcji → 422; log serwisu bez treści pisma.
-
-   - [x] **Krok 10. Testy integracyjne + golden set klasyfikacji** (2026-09-18). Z kodu nie wynika:
-     - **Golden set w `samples/classification/`** (zamiast mini-katalogu): `katalog.json` — syntetyczny
-       urząd miasta, 7 grup ze stanowiskami (gminny, bo pisma z `samples/summarization/` są gminne;
-       katalog w stylu UKE dałby same `no_match`), z celowymi zmyłkami (grupa 70 bez pism, FN-3
-       obok FN-2, OK-3 obok GN-3); `golden.json` — oczekiwana grupa / stanowisko dla 20 pism,
-       w tym 3 spoza katalogu (06, 09, 14) i 1 z grupą bez stanowiska (16); `summaries.json` —
-       **zamrożone streszczenia** (decyzja 1a: stałe wejście, pomyłka wyboru nie miesza się ze
-       zmiennością streszczeń), generowane `build_summaries.py` przez `/extract-and-summarize` —
-       uruchomić ponownie po zmianie promptu streszczeń lub ekstrakcji.
-     - **Znane ograniczenie: katalog i odpowiedzi ustalił Claude, bez przeglądu człowieka**
-       (decyzja użytkownika) — autor odpowiedzi to model tego samego rodzaju co oceniany (ta sama
-       wada co „sędzia = autor" w pkt 9). Pole z uzasadnieniem w golden świadomie usunięte.
-     - **`test_classification_service.py` = cały golden set z progiem 80%** (decyzja 1b), osobno
-       grupy i stanowiska; stanowisko pytane w OCZEKIWANEJ grupie (pomyłka na grupie nie liczy się
-       podwójnie). Pisma spoza katalogu liczą się w progu; **osobny, bezwzględny test siatki
-       bezpieczeństwa zostaje w `test_classification_prompt.py`** (decyzja 2 — plik nie usunięty).
-       Raport pomyłek z uzasadnieniem modelu także przy sukcesie (`pytest -s`).
-     - **`test_fastapi_classify.py` = sam kontrakt** (decyzja 3), niezależny od dostawcy: kształt
-       i spójność pól z `outcome`, 413, 422. Spójność trzech plików danych: jednostkowy
-       `test_classification_golden_data.py`.
-     - Fixture `llm_client` przeniesiony do `tests/integration/conftest.py` (był skopiowany w dwóch
-       testach promptów). Pułapka: klient **nowy na każdy test**, a wiele wywołań w teście — w JEDNYM
-       `asyncio.run` (`AsyncOpenAI` wiąże pulę połączeń z pętlą zdarzeń; „Event loop is closed").
-
-     Pierwszy wynik (`gpt-4o-mini`): grupy 18/20 (90%), stanowiska 17/17. Pomyłki: 07 wezwanie do
-     zapłaty → `no_match` (opis grupy 10 za słabo mówi o należnościach handlowych — katalogu NIE
-     poprawiamy pod wynik), 09 pełnomocnictwo → grupa podatkowa (streszczenie zgubiło „VAT" —
-     materiał do kroku 14).
-
-   - [ ] **Krok 11. Sprawdzian ręczny na realnym modelu** (Bielik 11B przez Ollamę i OpenAI; ocena
-     systematyczna świadomie później).
-     *Zrobić:* kilka przypadków na obu szczeblach (grupa, potem stanowisko), w tym dokumenty spoza
-     wszystkich opcji; dwa niezależne przebiegi; czytać surowe odpowiedzi, nie tylko wynik (pułapki
-     metodologii z pkt 9); przy długiej liście opcji sprawdzić `usage.prompt_tokens` pod kątem
-     sufitu `num_ctx`; potwierdzić, że schemat jest egzekwowany na każdym zapleczu — zwłaszcza czy
-     Open WebUI `/ollama/v1` przepuszcza `response_format` (niesprawdzone w kroku 2; jeśli nie, ścisły
-     parser da `invalid_response` na każdą odpowiedź zapisaną inaczej niż gołym JSON-em — krok 6 (a));
-     czy uzasadnienia 11B są spójne (4.5B przy poprawnym `OPT-00` napisał, że „OPT-00 również nie
-     pasuje"); sprawdzić, czy uzasadnienie pisane przed etykietą nie „przegaduje" modelu do opcji tam,
-     gdzie należało wybrać `OPT-00` (jeśli tak — kolejność pól do odwrócenia w kroku 5, kontrakt bez zmian).
-     **Zmierzone przy kroku 7 (a) na 4.5B — przegadanie JEST:** pismo spoza katalogu (awaria serwera)
-     → „nie pasuje do żadnej z wymienionych kategorii **poza OPT-7**… może być związany z informacją
-     publiczną" → `OPT-7`; uchwała wspólnoty → uzasadnienie krąży między trzema opcjami, wybór różny
-     w dwóch przebiegach (3 z 6 odpowiedzi niedeterministyczne mimo `temperature=0`). `gpt-4o-mini`
-     na tym samym materiale: `OPT-00` trafione, oba przebiegi identyczne. 4.5B do dekretacji bez
-     człowieka się nie nadaje — pytanie, czy 11B powtarza wzorzec „żadna… poza X".
-
-   - [ ] **Krok 12. Dokumentacja.**
-     *Zrobić:* README — szybki sprawdzian `curl` na `/classify` (`LLM_MAX_OUTPUT_TOKENS_*` już w „Konfiguracji");
-     `LLM_MAX_INPUT_CHARS` w tabeli „Limity i jakość ekstrakcji" oraz komentarze w `.env.example`
-     i `config.py` — nowe znaczenie „okno modelu w znakach" (`/summarize` przycina, `/classify`
-     odrzuca 413); **wyraźne ostrzeżenie**: przy domyślnym `num_ctx` Ollamy (4096 ≈ 8 500 znaków)
-     domyślne 90 000 nie chroni klasyfikacji — obniżyć albo podnieść `OLLAMA_CONTEXT_LENGTH`
-     (procedura Bielika). **Reguła doboru (rezerwa na odpowiedź, krok 7):** okno obejmuje prompt
-     I odpowiedź, a żaden endpoint nie rezerwuje odpowiedzi w kodzie — dobierać pod `/summarize`
-     (okno − prompt systemowy − `LLM_MAX_OUTPUT_TOKENS_SUMMARY`, × znaki/token); `/classify` zmieści się
-     wtedy z zapasem, bo jego budżet obejmuje już prompt systemowy — o ile
-     `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` ≤ `LLM_MAX_OUTPUT_TOKENS_SUMMARY` (domyślnie 400 ≤ 600). CLAUDE.md — cel i przepływ danych (dochodzi klasyfikacja), „Limity — trzy
-     bramki" (bramka `/classify` = odrzucenie, nie truncacja);
-     sekcja `fastapi`: `ClassificationService` z jednostkami (etykiety / prompt / parser),
-     rozszerzenie `LLMClient` (`json_schema`) i trwałe decyzje z kroków 1–7; ten punkt
-     TODO zwinąć do tego, co zostaje.
-
-   - [ ] **Krok 13. Klient PHP `integrations/php/DocAiClient.php`.**
-     *Decyzje:*
-     - [ ] (a) Dokładamy `classify()` + DTO wyniku czy nie. Według zgłoszenia DOKUS (PHP 7.4) ma
-       własnego klienta `Dokus\AiUke\Client\Client`, a nasz wymaga PHP 8.1+, więc w tej integracji
-       nie jest używany.
-
-     *Zrobić:* urealnić sekcję „Klient PHP" w README i CLAUDE.md (kto faktycznie z niego korzysta);
-     jeśli (a) = tak — metoda i DTO z polem `outcome` (krok 1 (f)).
-
-   - [ ] **Krok 14. Wniosek o brakach streszczeń** (prompt streszczeń zostaje bez zmian).
-     *Zrobić:* na materiale z kroku 11 ustalić, czy wybór bywa nierozstrzygalny przez to, czego
-     streszczenie nie zawiera; jeśli tak — wniosek z uzasadnieniem i przykładami (prompty + surowe
-     odpowiedzi). Punkt wyjścia: pkt 9 — adresata brakuje w 19/20 streszczeń golden setu.
+1. **Klasyfikacja `POST /classify` — co zostaje** (mechanizm, testy i golden set gotowe — sekcja
+   „Klasyfikacja" wyżej):
+   - **Wzorzec 11B „przegadanie ku `OPT-00`" — rozstrzygnąć eksperymentem.** Hipotezy
+     (NIESPRAWDZONE): H2 kolejność pól — wybór zapada w pierwszych słowach uzasadnienia, reszta
+     racjonalizuje (pominięty akurat fragment sprzeczny z tezą); H1 zdanie „ale nie wybieraj opcji,
+     która nie pasuje" + przykład `OPT-00` w prompcie; H3 wybiórcze czytanie opisów wielotematycznych;
+     H4 dane (16 graniczne z założenia, 07 myli też `gpt-4o-mini` — opis grupy 10). Eksperymenty:
+     E1 etykieta przed uzasadnieniem (kontrakt bez zmian), E2 bez zdania z H1, E3 opisy jako listy
+     tematów. Prompt wspólny → każdy wariant na OBU modelach (poprawka pod 11B może dodać fałszywych
+     dopasowań u `gpt-4o-mini`); 11B powtarzalny → jeden przebieg na wariant. Warianty w scratchpadzie,
+     do repo dopiero zwycięski.
+   - **Uzasadnienie przy `OPT-00` bez wyliczania opcji.** Wyliczanie nic nie wnosi do audytu (lista
+     jest w `user_prompt`), powstaje PO decyzji, a jego długość rośnie z katalogiem bez sufitu (Bielik
+     241 tokenów przy 7 opcjach). Prawdopodobny wyzwalacz: „(przy OPT-00: dlaczego nic nie pasuje)"
+     w `classification_system.md`. Kierunek: sformułowanie pozytywne („jednym zdaniem: czego dotyczy
+     dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po razem z E1–E3; potem obniżyć
+     default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
+   - **Niesprawdzone:** Open WebUI `/ollama/v1` — czy przepuszcza `response_format` (jeśli nie, ścisły
+     parser da `invalid_response` na każdą odpowiedź zapisaną inaczej niż gołym JSON-em); realny
+     katalog grup i stanowisk DOKUS-a (dane urzędu → poza repo).
+   - **Klient PHP** `integrations/php/DocAiClient.php`: decyzja — dokładamy `classify()` + DTO z polem
+     `outcome` czy nie. Według zgłoszenia DOKUS (PHP 7.4) ma własnego klienta
+     `Dokus\AiUke\Client\Client`, a nasz wymaga PHP 8.1+, więc w tej integracji nie jest używany —
+     urealnić sekcję „Klient PHP" (kto faktycznie z niego korzysta).
+   - **Wniosek o brakach streszczeń** (prompt streszczeń zostaje bez zmian): czy wybór bywa
+     nierozstrzygalny przez to, czego streszczenie nie zawiera; jeśli tak — wniosek z przykładami
+     (prompty + surowe odpowiedzi). Punkty wyjścia: 09 (streszczenie zgubiło „VAT" → `gpt-4o-mini`
+     wysłał pismo do grupy podatkowej), pkt 9 (adresata brakuje w 19/20 streszczeń).
 
 2. **Limit stron PDF tnie PRZED decyzją o OCR — koniec długiego PDF-a i pełny `text` giną.**
    `PdfPageLimiter` bierze pierwsze `MAX_OCR_PAGES` stron, zanim plik trafi do Tiki (strategia (B)
