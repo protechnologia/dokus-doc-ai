@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing   import Literal
 from pydantic import BaseModel, Field, StrictInt, StrictStr, model_validator
 
+from app.classification import ClassificationResult
 from app.extraction import ExtractionResult
 from app.llm import LLMUsage
 from app.pipeline import PipelineResult
@@ -410,3 +411,37 @@ class ClassifyResponse(BaseModel):
     user_prompt: str            = Field(description="Prompt uzytkownika wyslany do modelu (audyt; format wewnetrzny).")
     raw_response: str           = Field(description="Surowa odpowiedz modelu przed parsowaniem (audyt); przy invalid_response bywa niepoprawnym JSON-em.")
     metadata: ClassifyMetadata  = Field(description="Metadane: model i zuzycie tokenow.")
+
+    @classmethod
+    def from_result(
+        cls,
+        result: ClassificationResult,   # domenowy wynik z ClassificationService.classify
+    ) -> ClassifyResponse:
+        """Opis metody:
+        Zmapuj domenowy `ClassificationResult` na model odpowiedzi HTTP. Cienkie, jawne
+        przepisanie pol — spojnosc pol z `outcome` niesie wynik domenowy (jego konstruktory),
+        tu jej nie sprawdzamy. Etykieta wybrana przez model (`result.label`) swiadomie NIE
+        wychodzi: etykiety sa wewnetrzne (klient decyduje po `outcome` i `option_id`), a do
+        audytu wystarcza `raw_response`.
+
+        Przyklad argumentow:
+            result=ClassificationResult(outcome="matched", option_id=21, label="OPT-1",
+                                        rationale="Skarga na operatora.", error=None,
+                                        model="gpt-4o-mini", usage=LLMUsage(...),
+                                        system_prompt="...", user_prompt="...", raw_response="{...}")
+
+        Przyklad wyniku:
+            ClassifyResponse(outcome="matched", option_id=21, rationale="Skarga na operatora.",
+                             error=None, system_prompt="...", user_prompt="...", raw_response="{...}",
+                             metadata=ClassifyMetadata(model="gpt-4o-mini", usage=LLMUsage(...)))
+        """
+        return cls(
+            outcome       = result.outcome,
+            option_id     = result.option_id,
+            rationale     = result.rationale,
+            error         = result.error,
+            system_prompt = result.system_prompt,
+            user_prompt   = result.user_prompt,
+            raw_response  = result.raw_response,
+            metadata      = ClassifyMetadata(model=result.model, usage=result.usage),
+        )

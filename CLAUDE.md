@@ -420,37 +420,22 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po (dwa modele, dwa przebiegi,
      katalog 8 / 14 / 20+); potem obniżyć default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
 
-   - [ ] **Krok 8. Modele API — `api/app/models.py`** (odrębne od domenowych, mapowanie `from_result`).
-     Modele kontraktu powstały zaraz po zamrożeniu (przed krokami 2–7), bo nie zależą od domeny;
-     do kroku 7 czeka tylko mapowanie.
-     *Zrobić:*
-     - [x] Modele kontraktu (2026-09-16), sekcja „Klasyfikacja" w `models.py`. **Walidacja świadomie
-       minimalna — tylko struktura** (tak jak `SummarizeRequest` / `ExtractRequest`, które nie mają
-       walidatorów):
-       - `ClassifyOption` — `id: StrictInt | StrictStr` (alias `OptionId`; strict, bo bez tego `true`
-         → 1, `21.0` → 21 i odesłalibyśmy inny klucz), `name: str`, `description: str`,
-         `examples: str | None`;
-       - `ClassifyRequest` — `min_length=1` na `summaries` i `options` (pusta lista opcji → 422 to
-         wymóg zgłoszenia); limitów długości tu **nie** ma — budżet promptu sprawdza serwis, krok 1 (g);
-       - `ClassifyResponse` — `outcome` jako `Literal` (trzy wartości w OpenAPI), `metadata` jako
-         `ClassifyMetadata(model, usage: LLMUsage)`; bez walidatora spójności.
+   - [x] **Krok 8. Modele API — `api/app/models.py`** (2026-09-18; modele kontraktu 2026-09-16,
+     mapowanie `ClassifyResponse.from_result` po kroku 7). Sekcja „Klasyfikacja". Z kodu nie wynika:
+     - **Walidacja świadomie minimalna — tylko struktura** (jak `SummarizeRequest` / `ExtractRequest`):
+       `id: StrictInt | StrictStr` (strict, bo bez tego `true` → 1, `21.0` → 21 i odesłalibyśmy inny
+       klucz), `min_length=1` na `summaries` i `options` (pusta lista opcji → 422 to wymóg zgłoszenia),
+       bez limitów długości (budżet promptu sprawdza serwis, krok 1 (g)).
+     - **Świadomie usunięte (pierwsza wersja miała je, 40 testów → 16):** niepuste `name` /
+       `description` / elementy `summaries` (opcja bez treści nie psuje wyniku, a 422 wywracałoby
+       wywołanie dla grupy przez jedną lukę w katalogu — kompletność katalogu to strona DOKUS-a);
+       powtórzone `id` (etykiety rozwiązujemy po pozycji); walidator spójności pól z `outcome`
+       (spójność wynika z konstruktorów `ClassificationResult`, krok 7).
+     - `from_result` nie wystawia `label` — etykiety są wewnętrzne, audyt ma `raw_response`.
 
-       **Świadomie usunięte (pierwsza wersja miała je, 40 testów → 16):**
-       - niepuste `name` / `description` / elementy `summaries` — opcja bez treści nie psuje wyniku
-         (model jej nie wybierze), a 422 wywracałoby całe wywołanie dla grupy przez jedną lukę
-         w katalogu; kompletność katalogu i odsiew dokumentów bez streszczeń to strona DOKUS-a (README);
-       - powtórzone `id` — etykiety rozwiązujemy po pozycji, więc duplikat nie psuje mapowania
-         (wcześniejszy argument „mapowanie niejednoznaczne" był błędny);
-       - walidator spójności `option_id` / `rationale` / `error` z `outcome` — obrona przed własnym
-         błędem w miejscu, gdzie go nie popełniamy; `ClassifyResponse` buduje wyłącznie
-         `from_result`, a spójność wynika z konstrukcji wyniku w serwisie (krok 7) i jego testów.
-
-       Testy (16): `tests/unit/test_models_classify_request.py` (przykład z README, typ `id`
-       zachowany, brak / pusta lista, brak wymaganego pola opcji, `id` bez koercji)
-       i `tests/unit/test_models_classify_response.py` (nazwy pól = kontrakt, `option_id` string
-       w JSON, nieznany `outcome`).
-     - [ ] `ClassifyResponse.from_result(ClassificationResult)` — po kroku 7 (wymaga wyniku
-       domenowego) + test mapowania trzech wyników.
+     Testy: `test_models_classify_request.py`, `test_models_classify_response.py` (nazwy pól =
+     kontrakt, `option_id` string w JSON, nieznany `outcome`, `from_result` — trzy wyniki wg tabeli
+     z README, audyt i metadane dosłownie).
 
    - [ ] **Krok 9. Router — `api/app/routers/classify.py` + `app.include_router` w `main.py`.**
      *Zrobić:* DI jak w `/summarize` (`_get_classification_service`, klient z `get_llm_client()`,
