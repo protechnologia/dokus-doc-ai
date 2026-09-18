@@ -22,7 +22,6 @@ import pytest
 
 from app.classification.prompt_system import ClassificationSystemPrompt
 from app.classification.prompt_user import ClassificationUserPrompt
-from app.classification.service import DEFAULT_MAX_OUTPUT_TOKENS
 from app.classification.service_labels import ClassificationOption, OptionLabeler
 from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
 from app.config import get_settings
@@ -63,7 +62,7 @@ def _classify(client: LLMClient, summaries: list[str]) -> tuple[int | str | None
         client.complete(
             system      = ClassificationSystemPrompt().render(),
             user        = ClassificationUserPrompt().render(summaries=summaries, entries=labeler.entries),
-            max_tokens  = DEFAULT_MAX_OUTPUT_TOKENS,   # ten sam limit co w usłudze
+            max_tokens  = get_settings().llm_max_output_tokens_classify,   # ten sam limit co w usłudze (ENV)
             temperature = 0.0,
             json_schema = build_response_schema(labeler.labels),
         )

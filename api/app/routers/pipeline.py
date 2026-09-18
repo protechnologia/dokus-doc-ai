@@ -65,7 +65,7 @@ def _get_pipeline_service(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Bledna konfiguracja dostawcy LLM: {exc}",
         ) from exc
-    summarization = SummarizationService(client, max_input_chars=settings.llm_max_input_chars)
+    summarization = SummarizationService(client, max_input_chars=settings.llm_max_input_chars, max_output_tokens=settings.llm_max_output_tokens_summary)
 
     return PipelineService(extraction, summarization)
 

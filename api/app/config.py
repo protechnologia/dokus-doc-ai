@@ -62,6 +62,21 @@ class Settings(BaseSettings):
     # tokenizera). Domyślnie 90 000 — spójnie z MAX_OCR_PAGES=30 (~3000 znaków/stronę); pod
     # mniejszy model (Bielik, ~32k tok.) obniżyć (patrz README → „Spójność limitów pipeline'u").
     llm_max_input_chars: int = 90_000
+    # Górny limit długości streszczenia (tokeny, `max_tokens` wywołania). Typowe streszczenie
+    # pięciu pól to ~300 tokenów. Ucięcie limitem jest dziś CICHE (tekst, nie JSON — brak flagi);
+    # jedyny ślad: `usage.completion_tokens` równe limitowi. Wlicza się do okna modelu obok
+    # wejścia — przy zmianie przeliczyć `LLM_MAX_INPUT_CHARS` (README → „Okno modelu").
+    llm_max_output_tokens_summary: int = 600
+
+    # --- Klasyfikacja (domena: app.classification) ---
+    # Górny limit długości odpowiedzi przy /classify (tokeny). W ENV, bo liczba tokenów tego
+    # samego tekstu zależy od tokenizera modelu, czyli od wdrożenia. Pomiar 2026-09-18
+    # (`usage.completion_tokens`, gpt-4o-mini i Bielik 4.5B, dwa przebiegi, katalog 8 opcji):
+    # wybór opcji 44–62, ale przy `OPT-00` model wylicza w uzasadnieniu odrzucone opcje (~5 tokenów
+    # na nazwę), więc długość rośnie z katalogiem — gpt-4o-mini: 8 opcji -> 84, 14 -> 118, 20 -> 62
+    # („itp."); Bielik 4.5B do 112. 400 ≈ 3,4 × maksimum: urwany JSON przy `temperature=0` urwie się
+    # tak samo przy każdym ponowieniu. Za ciasny limit widać w logu: WARNING `completion_tokens 400/400`.
+    llm_max_output_tokens_classify: int = 400
 
     @field_validator("llm_api_key", "llm_base_url", "llm_model", mode="before")
     @classmethod

@@ -6,7 +6,7 @@ Publiczne API pakietu. Logika importuje stąd — np.:
 
 from app.classification.exception import InvalidModelResponseError, PromptTooLongError, UnknownLabelError
 from app.classification.model import ClassificationOutcome, ClassificationResult
-from app.classification.service import DEFAULT_MAX_OUTPUT_TOKENS, ClassificationService
+from app.classification.service import ClassificationService
 from app.classification.service_labels import NO_MATCH_LABEL, ClassificationOption, LabeledEntry, OptionLabeler
 from app.classification.service_parsing import ParsedResponse, parse_response
 
@@ -15,7 +15,6 @@ __all__ = [
     "ClassificationService",
     "ClassificationResult",
     "ClassificationOutcome",
-    "DEFAULT_MAX_OUTPUT_TOKENS",
     # etykiety opcji
     "OptionLabeler",
     "ClassificationOption",

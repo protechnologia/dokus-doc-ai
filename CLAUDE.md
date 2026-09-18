@@ -395,8 +395,11 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      z prefiksem `service_` (`service_labels.py`, `service_parsing.py`, `service_schema.py`; wcześniej
      bez prefiksu) — decyzja porządkowa, mimo że `service_labels` używają też `prompt_user` i `model`.
      Z kodu nie wynika:
-     - **(a) `max_tokens` = 400, stała w kodzie (`DEFAULT_MAX_OUTPUT_TOKENS`), nie ENV** — długość
-       odpowiedzi wyznacza prompt, więc zmienia się z nim, nie z wdrożeniem. Pomiar (`gpt-4o-mini`
+     - **(a) `max_tokens` = 400, z ENV `LLM_MAX_OUTPUT_TOKENS_CLASSIFY`** (tak samo streszczenia:
+       `LLM_MAX_OUTPUT_TOKENS_SUMMARY` = 600, wcześniej stała w konstruktorze). Pierwotnie stała w kodzie
+       („długość wyznacza prompt"); przeniesione do ENV 2026-09-18, bo liczba tokenów tego samego tekstu
+       zależy od tokenizera modelu, czyli od wdrożenia, a limit wlicza się do okna obok
+       `LLM_MAX_INPUT_CHARS` — oba pokrętła stoją teraz obok siebie. Pomiar (`gpt-4o-mini`
        i Bielik 4.5B, 6 pism, katalog 8 opcji, dwa przebiegi): wybór opcji 44–62 tokeny, **ale przy
        `OPT-00` model wylicza w uzasadnieniu odrzucone opcje** (~5 tokenów na nazwę) — `gpt-4o-mini`:
        8 opcji → 84, 14 → 118 (wszystkie nazwy), 20 → 62 („itp."); Bielik do 112. 400 ≈ 3,4 ×
@@ -415,7 +418,7 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      „(przy OPT-00: dlaczego nic nie pasuje)" w `classification_system.md` — przykład `OPT-00` jest
      krótki, a model i tak wylicza. Kierunek: sformułowanie pozytywne („jednym zdaniem: czego dotyczy
      dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po (dwa modele, dwa przebiegi,
-     katalog 8 / 14 / 20+); potem obniżyć `max_tokens` (~250).
+     katalog 8 / 14 / 20+); potem obniżyć default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
 
    - [ ] **Krok 8. Modele API — `api/app/models.py`** (odrębne od domenowych, mapowanie `from_result`).
      Modele kontraktu powstały zaraz po zamrożeniu (przed krokami 2–7), bo nie zależą od domeny;
@@ -451,7 +454,9 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
 
    - [ ] **Krok 9. Router — `api/app/routers/classify.py` + `app.include_router` w `main.py`.**
      *Zrobić:* DI jak w `/summarize` (`_get_classification_service`, klient z `get_llm_client()`,
-     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`); `ClassifyOption`
+     `LLMConfigError` → 500, `max_prompt_chars` z `Settings.llm_max_input_chars`, `max_output_tokens`
+     z `Settings.llm_max_output_tokens_classify` — przepływ w sekcji „DI" testu routera, jak w
+     `test_fastapi_summarize.py`); `ClassifyOption`
      → `ClassificationOption` (domena); mapowanie błędów:
      `PromptTooLongError` → 413, `LLMAuthError` → 500, `LLMResponseError` / `LLMError` → 502,
      `LLMRateLimitError` → 503, `LLMTimeoutError` → 504 — wszystkie przez `HTTPException` jak dziś
@@ -496,15 +501,16 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      człowieka się nie nadaje — pytanie, czy 11B powtarza wzorzec „żadna… poza X".
 
    - [ ] **Krok 12. Dokumentacja.**
-     *Zrobić:* README — szybki sprawdzian `curl` na `/classify` (nowych ENV brak: `max_tokens` stałą, krok 7 (a));
+     *Zrobić:* README — szybki sprawdzian `curl` na `/classify` (`LLM_MAX_OUTPUT_TOKENS_*` już w „Konfiguracji");
      `LLM_MAX_INPUT_CHARS` w tabeli „Limity i jakość ekstrakcji" oraz komentarze w `.env.example`
      i `config.py` — nowe znaczenie „okno modelu w znakach" (`/summarize` przycina, `/classify`
      odrzuca 413); **wyraźne ostrzeżenie**: przy domyślnym `num_ctx` Ollamy (4096 ≈ 8 500 znaków)
      domyślne 90 000 nie chroni klasyfikacji — obniżyć albo podnieść `OLLAMA_CONTEXT_LENGTH`
      (procedura Bielika). **Reguła doboru (rezerwa na odpowiedź, krok 7):** okno obejmuje prompt
      I odpowiedź, a żaden endpoint nie rezerwuje odpowiedzi w kodzie — dobierać pod `/summarize`
-     (okno − prompt systemowy − 600 tokenów odpowiedzi, × znaki/token); `/classify` zmieści się wtedy
-     z zapasem, bo jego budżet obejmuje już prompt systemowy, a odpowiedź ma ≤ 400 tokenów. CLAUDE.md — cel i przepływ danych (dochodzi klasyfikacja), „Limity — trzy
+     (okno − prompt systemowy − `LLM_MAX_OUTPUT_TOKENS_SUMMARY`, × znaki/token); `/classify` zmieści się
+     wtedy z zapasem, bo jego budżet obejmuje już prompt systemowy — o ile
+     `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` ≤ `LLM_MAX_OUTPUT_TOKENS_SUMMARY` (domyślnie 400 ≤ 600). CLAUDE.md — cel i przepływ danych (dochodzi klasyfikacja), „Limity — trzy
      bramki" (bramka `/classify` = odrzucenie, nie truncacja);
      sekcja `fastapi`: `ClassificationService` z jednostkami (etykiety / prompt / parser),
      rozszerzenie `LLMClient` (`json_schema`) i trwałe decyzje z kroków 1–7; ten punkt
@@ -590,6 +596,10 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
    wstrzykiwany w próżnię (usunięty) i `OLLAMA_PORT` poza szablonem. **Zostaje**: weryfikacja, że
    pokrętło realnie *działa* w runtime (test sprawdza przepływ nazw, nie zachowanie) — np.
    nieprzekazany kiedyś `LLM_TIMEOUT_SECONDS` dziś zostałby złapany, ale zły typ/jednostka nie.
+   Pierwszy krok: sekcje „DI" w `test_fastapi_summarize.py` / `test_fastapi_pipeline.py` sprawdzają,
+   że limity LLM z `Settings` docierają z routera do serwisu streszczeń (testy HTTP podstawiają cały
+   serwis, więc tego nie widzą). Bez takiego testu zostają ustawienia ekstrakcji (`TIKA_URL`,
+   `TIKA_TIMEOUT_SECONDS`, `MAX_OCR_PAGES`, `MAX_UPLOAD_BYTES`).
 7. **Truncacja długich pism = ryzyko jakości — częściowo zrobione.** Końcówka pisma (termin,
    podpis, rygor) już dociera do modelu: cięcie początek / środek / koniec (`TextTruncator`) zamiast
    samego początku. **Zostaje:** środek dokumentu poza jednym fragmentem wciąż ginie (decyzja

@@ -14,6 +14,8 @@ _RELEVANT_ENV = (
     "LLM_PROVIDER",
     "LLM_MODEL",
     "LLM_API_KEY",
+    "LLM_MAX_OUTPUT_TOKENS_SUMMARY",
+    "LLM_MAX_OUTPUT_TOKENS_CLASSIFY",
 )
 
 
@@ -45,6 +47,17 @@ def test_env_override(monkeypatch):
     assert s.tika_url == "http://tika:9998"
     assert s.llm_provider == "azure"
     assert s.llm_model == "gpt-4o"
+
+
+def test_limity_odpowiedzi_modelu_z_env(monkeypatch):
+    """Limity odpowiedzi modelu: defaulty 600 / 400 (zmierzone), nadpisywalne z ENV (tokenizer zależy od wdrożenia)."""
+    _clear_env(monkeypatch)
+    assert (Settings(_env_file=None).llm_max_output_tokens_summary, Settings(_env_file=None).llm_max_output_tokens_classify) == (600, 400)
+
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS_SUMMARY", "800")
+    monkeypatch.setenv("LLM_MAX_OUTPUT_TOKENS_CLASSIFY", "250")
+    s = Settings(_env_file=None)
+    assert (s.llm_max_output_tokens_summary, s.llm_max_output_tokens_classify) == (800, 250)
 
 
 def test_unknown_env_ignored(monkeypatch):

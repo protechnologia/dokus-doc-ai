@@ -14,7 +14,8 @@ Decyzje (2026-09-18 — nie „poprawiać" bez powodu):
   - za długi prompt -> `PromptTooLongError` PRZED wywołaniem, nigdy ucinanie (ucięcie opcji
     zmienia zbiór wyboru). Budżet liczony na CAŁYM prompcie (systemowy + użytkownika), bo do okna
     modelu musi wejść całość — inaczej niż w summaryzacji, gdzie limit dotyczy samego tekstu,
-  - `max_tokens` stałą w kodzie, nie ENV — uzasadnienie przy `DEFAULT_MAX_OUTPUT_TOKENS`,
+  - limit odpowiedzi z ENV (`LLM_MAX_OUTPUT_TOKENS_CLASSIFY`, wstrzykuje router) — liczba tokenów
+    zależy od tokenizera modelu; pomiar i uzasadnienie wartości domyślnej w `app/config.py`,
   - log bez treści pisma i opcji: wynik + etykieta; `invalid_response` -> WARNING z przyczyną
     (inaczej porażka ginie za `-> 200` w logu żądań).
 """
@@ -34,19 +35,6 @@ from app.classification.service_schema import build_response_schema
 from app.llm import LLMClient, LLMResult
 
 logger = logging.getLogger(__name__)
-
-# --- Stałe -----------------------------------------------------------------------
-
-# Limit długości odpowiedzi modelu (tokeny). Stała w kodzie, nie ENV: długość odpowiedzi wyznacza
-# prompt („1–2 zdania") i schemat, czyli logika w repo — zmienia się razem z promptem, nie z
-# wdrożeniem. Pomiar 2026-09-18 (`usage.completion_tokens`, dwa przebiegi, katalog 8 opcji):
-# wybór opcji 44–62 na gpt-4o-mini i Bieliku 4.5B, ale przy `OPT-00` model wylicza w uzasadnieniu
-# odrzucone opcje (~5 tokenów na nazwę), więc długość rośnie z katalogiem — gpt-4o-mini: 8 opcji
-# -> 84, 14 -> 118 (wszystkie nazwy), 20 -> 62 („itp."); Bielik 4.5B do 112 (uzasadnienie
-# krążące między opcjami). 400 ≈ 3,4 × maksimum: urwany JSON przy `temperature=0` urwie się tak
-# samo przy każdym ponowieniu, a limit ogranicza jedynie model zapętlony w uzasadnieniu (tokeny
-# powstają tylko, gdy model je pisze). Sygnał za ciasnego limitu: WARNING z `completion_tokens` 400/400.
-DEFAULT_MAX_OUTPUT_TOKENS = 400
 
 # --- Prompty (teksty w app/prompt/*.md; wczytane raz, przy imporcie) ---------------
 # Brak pliku albo rozjazd placeholderów wywala import serwisu, czyli start aplikacji.
@@ -76,10 +64,10 @@ class ClassificationService:
 
     def __init__(
         self,
-        client: LLMClient,                                    # transport/generacja LLM (z fabryki); w testach atrapa
+        client: LLMClient,               # transport/generacja LLM (z fabryki); w testach atrapa
         *,
-        max_prompt_chars: int = 90_000,                       # budżet znaków całego promptu (z `Settings.llm_max_input_chars`)
-        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,   # limit długości odpowiedzi modelu, np. 400
+        max_prompt_chars: int = 90_000,  # budżet znaków całego promptu (z `Settings.llm_max_input_chars`)
+        max_output_tokens: int = 400,    # limit długości odpowiedzi modelu (z `Settings.llm_max_output_tokens_classify`)
     ) -> None:
         """Opis metody:
         Zbuduj serwis nad wstrzykniętym klientem LLM (sama konfiguracja, bez I/O).
@@ -87,6 +75,7 @@ class ClassificationService:
         Przyklad argumentow:
             client=FakeLLMClient()
             max_prompt_chars=90000
+            max_output_tokens=400
 
         Przyklad wyniku:
             gotowy ClassificationService

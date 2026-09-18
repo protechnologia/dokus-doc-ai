@@ -36,10 +36,10 @@ def _get_summarization_service(
     Bledna konfiguracja dostawcy (np. brak klucza dla 'openai') -> 500 z czytelnym komunikatem.
 
     Przyklad argumentow:
-        settings=Settings(llm_provider="fake", llm_max_input_chars=90000)
+        settings=Settings(llm_provider="fake", llm_max_input_chars=90000, llm_max_output_tokens_summary=600)
 
     Przyklad wyniku:
-        SummarizationService(FakeLLMClient(), max_input_chars=90000)
+        SummarizationService(FakeLLMClient(), max_input_chars=90000, max_output_tokens=600)
 
     Raises:
         HTTPException(500): niespojna konfiguracja dostawcy LLM (`LLMConfigError`).
@@ -52,7 +52,7 @@ def _get_summarization_service(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Bledna konfiguracja dostawcy LLM: {exc}",
         ) from exc
-    return SummarizationService(client, max_input_chars=settings.llm_max_input_chars)
+    return SummarizationService(client, max_input_chars=settings.llm_max_input_chars, max_output_tokens=settings.llm_max_output_tokens_summary)
 
 
 @router.post("/summarize", response_model=SummarizeResponse, summary="Streszczenie tekstu")

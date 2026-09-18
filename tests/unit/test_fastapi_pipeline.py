@@ -4,7 +4,8 @@ Bez sieci, bez Tiki i bez LLM: podstawiamy ATRAPE `PipelineService` przez `depen
 (oddaje zadany `PipelineResult` albo rzuca zadany wyjatek dowolnej z dwoch warstw). Testujemy
 WYLACZNIE warstwe HTTP routera: dekodowanie base64, walidacje rozmiaru, ksztalt odpowiedzi i
 UNIE mapowan wyjatkow obu warstw (ekstrakcja + summaryzacja) na kody. Realny przeplyw przez
-kontener jest w `tests/integration/test_fastapi_pipeline.py`.
+kontener jest w `tests/integration/test_fastapi_pipeline.py`. Osobno (sekcja DI na koncu): czy
+funkcja DI przekazuje ustawienia z `Settings` do konstruktora serwisu streszczen.
 """
 
 import base64
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings, get_settings
 from app.extraction import EmptyExtractionError, ExtractionMetadata, TikaExtractionError, TikaUnavailableError
-from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError, LLMUsage
+from app.llm import FakeLLMClient, LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError, LLMUsage
 from app.main import app
 from app.pipeline import PipelineResult
 from app.routers.pipeline import _get_pipeline_service
@@ -220,3 +221,21 @@ def test_response_blad_llm_daje_502():
     client = _client(_StubService(error=LLMResponseError("5xx")))
     resp = client.post("/extract-and-summarize", json={"content_base64": _b64()})
     assert resp.status_code == 502, resp.text
+
+
+# --- DI: ustawienia docieraja do serwisu -------------------------------------------
+# Testy wyzej podstawiaja caly serwis, wiec nie widza, CO funkcja DI przekazuje do konstruktorow.
+# Na razie tylko czesc streszczen; ustawienia ekstrakcji (TIKA_URL, TIKA_TIMEOUT_SECONDS,
+# MAX_OCR_PAGES) bez takiego testu — otwarta czesc TODO pkt 6.
+
+
+def test_di_przekazuje_limity_llm_z_settings(monkeypatch):
+    """`LLM_MAX_INPUT_CHARS` i `LLM_MAX_OUTPUT_TOKENS_SUMMARY` z `Settings` trafiaja do serwisu streszczen w pipeline."""
+    calls: list[dict] = []
+    monkeypatch.setattr("app.routers.pipeline.get_llm_client", FakeLLMClient)
+    monkeypatch.setattr("app.routers.pipeline.SummarizationService", lambda client, **kwargs: calls.append(kwargs))
+
+    # Wartosci rozne od defaultow — test nie przejdzie przypadkiem na wartosciach domyslnych.
+    _get_pipeline_service(settings=Settings(_env_file=None, llm_max_input_chars=12_345, llm_max_output_tokens_summary=321))
+
+    assert calls == [{"max_input_chars": 12_345, "max_output_tokens": 321}]

@@ -160,6 +160,8 @@ Zmienne wykorzystywane przez **logikę aplikacji**:
 | `LLM_BASE_URL` | — | Własny endpoint zgodny z API OpenAI. Ścieżka zależy od dostawcy: Ollama → `.../v1`, Open WebUI → `.../ollama/v1`. Wymagany dla `ollama`, opcjonalny dla `openai`. |
 | `LLM_TIMEOUT_SECONDS` | `60` | Limit czasu wywołania LLM. Usługa nie ponawia wywołań, więc po jego przekroczeniu od razu zwraca `504`. |
 | `LLM_MAX_INPUT_CHARS` | `90000` | Limit znaków tekstu wysyłanego do LLM w `POST /summarize` i `POST /extract-and-summarize`. Ustawienie należy dostosować do rozmiaru okna kontekstu modelu lub do optymalizacji kosztów. |
+| `LLM_MAX_OUTPUT_TOKENS_SUMMARY` | `600` | Limit długości streszczenia w tokenach (`POST /summarize`, `POST /extract-and-summarize`). Odpowiedź zajmuje miejsce w oknie modelu obok wejścia — po zmianie przelicz `LLM_MAX_INPUT_CHARS`. |
+| `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` | `400` | Limit długości odpowiedzi modelu w tokenach przy `POST /classify`. Za niski urywa odpowiedź (`invalid_response`, w logu `completion_tokens` równe limitowi). |
 
 ## API
 
@@ -817,7 +819,7 @@ Skutki są ciche i mylące:
 - Nasza flaga `truncated` tego **nie wykryje**. Mówi wyłącznie o `LLM_MAX_INPUT_CHARS`, czyli
   o cięciu po naszej stronie. Cięcie po stronie Ollamy raportowane jest jako `truncated: false`.
 - Przy `num_ctx = 4096` realne wejście pod dokument to ~3 100 tokenów ≈ **8 500 znaków ≈ 3 strony**
-  (4 096 − ~330 na prompt systemowy − 600 na odpowiedź).
+  (4 096 − ~330 na prompt systemowy − 600 na odpowiedź, `LLM_MAX_OUTPUT_TOKENS_SUMMARY`).
 
 **Jak sprawdzić, ile naprawdę dostajesz:** pole `usage.prompt_tokens` w odpowiedzi
 `POST /summarize`. Wyślij tekst zdecydowanie dłuższy niż okno; jeżeli licznik zatrzyma się na

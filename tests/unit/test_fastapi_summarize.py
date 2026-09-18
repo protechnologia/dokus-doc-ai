@@ -4,13 +4,15 @@ Bez sieci i bez LLM: podstawiamy ATRAPE `SummarizationService` przez `dependency
 (serwis oddaje zadany `SummarizationResult` albo rzuca zadany wyjatek). Dzieki temu testujemy
 WYLACZNIE warstwe HTTP routera — ksztalt odpowiedzi i mapowanie wyjatkow domenowych/LLM na
 kody (422/500/502/503/504) — bez kosztu i bez wysylania danych na zewnatrz. Realny przeplyw
-przez kontener jest w `tests/integration/test_fastapi_summarize.py`.
+przez kontener jest w `tests/integration/test_fastapi_summarize.py`. Osobno (sekcja DI na koncu):
+czy funkcja DI przekazuje ustawienia z `Settings` do konstruktora serwisu.
 """
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.llm import LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError, LLMUsage
+from app.config import Settings
+from app.llm import FakeLLMClient, LLMAuthError, LLMRateLimitError, LLMResponseError, LLMTimeoutError, LLMUsage
 from app.main import app
 from app.routers.summarize import _get_summarization_service
 from app.summarization import EmptyInputError, SummarizationMetadata, SummarizationResult, TextPart, TextParts
@@ -180,3 +182,20 @@ def test_zla_konfiguracja_dostawcy_daje_500(monkeypatch):
     monkeypatch.setattr(summarize_router, "get_llm_client", _boom)
     resp = TestClient(app).post("/summarize", json={"text": "abc"})
     assert resp.status_code == 500, resp.text
+
+
+# --- DI: ustawienia docieraja do serwisu -------------------------------------------
+# Testy wyzej podstawiaja caly serwis, wiec nie widza, CO funkcja DI przekazuje do konstruktora.
+# Pokretlo z `.env`, ktorego router nie przekaze, cicho dzialaloby na defaulcie z kodu (TODO pkt 6).
+
+
+def test_di_przekazuje_limity_llm_z_settings(monkeypatch):
+    """`LLM_MAX_INPUT_CHARS` i `LLM_MAX_OUTPUT_TOKENS_SUMMARY` z `Settings` trafiaja do konstruktora serwisu."""
+    calls: list[dict] = []
+    monkeypatch.setattr("app.routers.summarize.get_llm_client", FakeLLMClient)
+    monkeypatch.setattr("app.routers.summarize.SummarizationService", lambda client, **kwargs: calls.append(kwargs))
+
+    # Wartosci rozne od defaultow — test nie przejdzie przypadkiem na wartosciach domyslnych.
+    _get_summarization_service(settings=Settings(_env_file=None, llm_max_input_chars=12_345, llm_max_output_tokens_summary=321))
+
+    assert calls == [{"max_input_chars": 12_345, "max_output_tokens": 321}]

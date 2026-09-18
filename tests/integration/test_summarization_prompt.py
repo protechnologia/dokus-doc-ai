@@ -25,8 +25,8 @@ from app.summarization.prompt_user import SummaryUserPrompt
 # Parasol `integration` + węższy `integration_llm` (uderzamy w realnego dostawcę LLM).
 pytestmark = [pytest.mark.integration, pytest.mark.integration_llm]
 
-# Jak domyślne `max_output_tokens` serwisu — streszczenie nie może się urwać przed sprawdzanymi polami.
-_MAX_TOKENS = 600
+# Jak w usłudze (`LLM_MAX_OUTPUT_TOKENS_SUMMARY`) — streszczenie nie może się urwać przed sprawdzanymi polami.
+_MAX_TOKENS = get_settings().llm_max_output_tokens_summary
 
 # Jednoznaczny wniosek: typ w nagłówku i w pierwszym zdaniu, nadawca z imienia i nazwiska.
 _WNIOSEK = (

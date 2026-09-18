@@ -45,6 +45,9 @@ services:
       LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS:-60}"
       # --- Summaryzacja ---
       LLM_MAX_INPUT_CHARS: "${LLM_MAX_INPUT_CHARS:-90000}"
+      LLM_MAX_OUTPUT_TOKENS_SUMMARY: "${LLM_MAX_OUTPUT_TOKENS_SUMMARY:-600}"
+      # --- Klasyfikacja ---
+      LLM_MAX_OUTPUT_TOKENS_CLASSIFY: "${LLM_MAX_OUTPUT_TOKENS_CLASSIFY:-400}"
     # Adres nasluchu na HOSCIE. Domyslnie 0.0.0.0 (dev: dostepne z sieci). Na produkcji
     # zawezamy przez BIND_ADDR w .env — do interfejsu LAN, przez ktory laczy sie DOKUS,
     # albo do 127.0.0.1, gdy DOKUS stoi na tej samej maszynie.

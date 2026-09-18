@@ -13,7 +13,7 @@ import pytest
 
 from app.classification.exception import PromptTooLongError
 from app.classification.prompt_system import ClassificationSystemPrompt
-from app.classification.service import DEFAULT_MAX_OUTPUT_TOKENS, ClassificationService
+from app.classification.service import ClassificationService
 from app.classification.service_labels import ClassificationOption, OptionLabeler
 from app.classification.service_schema import build_response_schema
 from app.llm import FakeLLMClient, LLMClient, LLMResult, LLMTimeoutError, LLMUsage
@@ -60,17 +60,17 @@ def _prompt_chars() -> int:
 
 
 def test_classify_przekazuje_parametry_wywolania():
-    """Do modelu: prompt systemowy, streszczenie w userze, `temperature=0`, stały `max_tokens`, schemat z enum etykiet w kolejności promptu."""
+    """Do modelu: prompt systemowy, streszczenie w userze, `temperature=0`, `max_tokens` z konstruktora, schemat z enum etykiet w kolejności promptu."""
     llm = _RecordingLLM()
 
-    _classify(llm)
+    _classify(llm, max_output_tokens=321)
 
     assert len(llm.calls) == 1                                    # jedno żądanie = jedno wywołanie modelu
     call = llm.calls[0]
     assert call["system"] == ClassificationSystemPrompt().render()
     assert _SUMMARY in call["user"]
     assert call["temperature"] == 0.0
-    assert call["max_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+    assert call["max_tokens"] == 321
     assert call["json_schema"] == build_response_schema(["OPT-1", "OPT-2", "OPT-3", "OPT-00"])
 
 
@@ -210,10 +210,10 @@ def test_log_poprawnego_wyboru_info_bez_tresci_pisma(caplog):
 def test_log_invalid_response_warning_z_przyczyna(caplog):
     """`invalid_response` -> WARNING z przyczyną i licznikiem tokenów (urwanie widać po completion_tokens = limit)."""
     with caplog.at_level(logging.INFO, logger="app.classification.service"):
-        _classify(_RecordingLLM(text="To nie jest JSON."))
+        _classify(_RecordingLLM(text="To nie jest JSON."), max_output_tokens=321)
 
     records = [r for r in caplog.records if r.name == "app.classification.service"]
     assert [r.levelno for r in records] == [logging.WARNING]
     message = records[0].getMessage()
     assert "Niepoprawny JSON w odpowiedzi modelu" in message
-    assert f"40/{DEFAULT_MAX_OUTPUT_TOKENS}" in message
+    assert "40/321" in message

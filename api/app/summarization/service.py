@@ -105,7 +105,7 @@ class SummarizationService:
         client: LLMClient,             # transport/generacja LLM (z fabryki); w testach `FakeLLMClient`
         *,
         max_input_chars: int = 90_000,   # limit znaków wejścia pod okno modelu (z `Settings.llm_max_input_chars`)
-        max_output_tokens: int = 600,    # górny limit długości streszczenia (zwięzłe -> krótkie)
+        max_output_tokens: int = 600,    # górny limit długości streszczenia (z `Settings.llm_max_output_tokens_summary`)
     ) -> None:
         """Opis metody:
         Zbuduj serwis nad wstrzykniętym klientem LLM (sama konfiguracja, bez I/O). Trunkator
