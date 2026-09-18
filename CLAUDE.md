@@ -62,7 +62,9 @@ działa po doinstalowaniu pakietu `pol`, bez osobnego kontenera.
 Nośna zasada: NIE mieszać „rozmowy z usługą" (transport) z decyzjami o treści (domena) —
 tu dokładasz nowy kod po właściwej stronie. Middleware nadaje/propaguje `X-Request-ID`
 (nagłówek + logi; to **NIE** monitoring). Wejście plików = **base64 w JSON** (nie multipart);
-modele API są **odrębne** od domenowych (kontrakt HTTP stoi niezależnie od ewolucji domeny).
+modele API są **odrębne** od domenowych (kontrakt HTTP stoi niezależnie od ewolucji domeny) —
+pakiet `app/models/`, moduł na endpoint jak w `app/routers/` (+ `truncation.py`, baza żądań dwóch
+endpointów), importy przez re-eksport w `__init__`.
 
 **Przyczyna błędu w logach = osobne handlery, nie middleware.** Middleware widzi już gotową
 `Response` — `detail` (jedyne „dlaczego") żyje wyłącznie w wyjątku, piętro niżej. Stąd
@@ -301,7 +303,7 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
 
    - [x] **Krok 1. Kontrakt `POST /classify` — zamrożony 2026-09-16** (potwierdzony przez DOKUS;
      zmiany tylko za zgodą obu stron). Źródło prawdy: README „POST /classify" + modele w
-     `api/app/models.py`. Status i adnotację „W przygotowaniu" w README zdjąć po implementacji
+     `api/app/models/classify.py`. Status i adnotację „W przygotowaniu" w README zdjąć po implementacji
      (krok 12). Z kodu nie wynika:
      - (f) **Każda odpowiedź modelu to `200` + `outcome`, 5xx = odpowiedzi modelu nie było** — kod
        HTTP wyznacza politykę ponowień DOKUS-a bez czytania ciała. Nie „poprawiać" na `502`.
@@ -420,8 +422,8 @@ Pkt 1 = zadanie w toku (nowa funkcja); dalej luki „ostatniej mili" (system dla
      dokument i czego brakuje w opcjach"), nie zakaz; pomiar przed / po (dwa modele, dwa przebiegi,
      katalog 8 / 14 / 20+); potem obniżyć default `LLM_MAX_OUTPUT_TOKENS_CLASSIFY` (~250).
 
-   - [x] **Krok 8. Modele API — `api/app/models.py`** (2026-09-18; modele kontraktu 2026-09-16,
-     mapowanie `ClassifyResponse.from_result` po kroku 7). Sekcja „Klasyfikacja". Z kodu nie wynika:
+   - [x] **Krok 8. Modele API — `api/app/models/classify.py`** (2026-09-18; modele kontraktu
+     2026-09-16, mapowanie `ClassifyResponse.from_result` po kroku 7). Z kodu nie wynika:
      - **Walidacja świadomie minimalna — tylko struktura** (jak `SummarizeRequest` / `ExtractRequest`):
        `id: StrictInt | StrictStr` (strict, bo bez tego `true` → 1, `21.0` → 21 i odesłalibyśmy inny
        klucz), `min_length=1` na `summaries` i `options` (pusta lista opcji → 422 to wymóg zgłoszenia),

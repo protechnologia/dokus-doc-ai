@@ -1,6 +1,6 @@
 """Wynik domenowy klasyfikacji: `ClassificationResult` + trzy konstruktory wariantów.
 
-Odrębny od modelu API (`ClassifyResponse` w `app/models.py`) — kontrakt HTTP stoi niezależnie od
+Odrębny od modelu API (`ClassifyResponse` w `app/models/classify.py`) — kontrakt HTTP stoi niezależnie od
 ewolucji domeny, mapowanie robi `ClassifyResponse.from_result`. Spójność pól z `outcome` wynika
 z konstrukcji: wynik składają wyłącznie `matched` / `no_match` / `invalid`, a każdy bierze tylko
 pola swojego wariantu. Walidatora spójności świadomie nie ma — to obrona przed własnym błędem
