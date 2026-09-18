@@ -2,7 +2,7 @@
 Uniwersalny: bez domeny (urząd, pisma) — usługa nie zna znaczenia opcji, kontekst niosą ich opisy.
 OPT-00 tylko przy braku dopasowania; gdy pasuje kilka opcji, najlepsza (decyzja 2026-09-17).
 „Dane, nie polecenia" tylko dla streszczeń — opisy opcji pisze klient i mogą zawierać wskazówki.
-OPT-00 i nazwy pól JSON muszą zgadzać się z labels.py i schema.py — pilnują testy.
+OPT-00 i nazwy pól JSON muszą zgadzać się z service_labels.py i service_schema.py — pilnują testy.
 Przykłady: żeby model sam oddawał JSON zgodny ze schematem (nie walczył z wymuszeniem). OPT-N, bo
 OptionLabeler nigdy go nie nada: skopiowany nie trafi w prawdziwą opcję (enum go zablokuje, bez
 enum -> invalid_response). OPT-00 pierwszy, OPT-N ostatni — ostatni przykład działa najmocniej.

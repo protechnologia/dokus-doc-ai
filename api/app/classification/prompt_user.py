@@ -4,14 +4,14 @@ Szkielet (sekcje w tagach) w `app/prompt/classification_user.md`; tu klasa, któ
 listy i zwraca w pełni gotowy prompt. Mechanizm: `app.prompt.PromptTemplate`.
 
 Import `LabeledEntry` z tego samego pakietu nie tworzy cyklu: `__init__` pakietu wykonuje się,
-zanim ruszy którykolwiek jego moduł, a `labels.py` nie importuje promptu ani serwisu.
+zanim ruszy którykolwiek jego moduł, a `service_labels.py` nie importuje promptu ani serwisu.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.classification.labels import LabeledEntry
+from app.classification.service_labels import LabeledEntry
 from app.prompt import PromptTemplate
 
 

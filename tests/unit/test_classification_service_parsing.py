@@ -12,7 +12,8 @@ import re
 
 import pytest
 
-from app.classification.parsing import InvalidModelResponseError, ParsedResponse, _json_type, _reject_duplicate_keys, parse_response
+from app.classification.exception import InvalidModelResponseError
+from app.classification.service_parsing import ParsedResponse, _json_type, _reject_duplicate_keys, parse_response
 
 
 def _raw(**fields):

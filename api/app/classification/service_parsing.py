@@ -24,9 +24,10 @@ from __future__ import annotations
 import json
 from typing import Any, NamedTuple
 
-from app.classification.schema import LABEL_FIELD, RATIONALE_FIELD
+from app.classification.exception import InvalidModelResponseError
+from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD
 
-# --- Wynik i wyjątek domenowy ----------------------------------------------------
+# --- Wynik -----------------------------------------------------------------------
 
 
 class ParsedResponse(NamedTuple):
@@ -34,10 +35,6 @@ class ParsedResponse(NamedTuple):
 
     rationale: str
     label: str
-
-
-class InvalidModelResponseError(Exception):
-    """Odpowiedzi modelu nie da się użyć; komunikat = przyczyna do pola `error` wyniku `invalid_response`."""
 
 
 # --- Czyste helpery — testowalne punktowo ----------------------------------------

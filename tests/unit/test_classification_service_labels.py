@@ -8,7 +8,8 @@ Helper `_label` wołany wprost na klasie.
 
 import pytest
 
-from app.classification.labels import NO_MATCH_LABEL, ClassificationOption, OptionLabeler, UnknownLabelError
+from app.classification.exception import UnknownLabelError
+from app.classification.service_labels import NO_MATCH_LABEL, ClassificationOption, OptionLabeler
 
 
 def _opcja(id, name="Opcja"):

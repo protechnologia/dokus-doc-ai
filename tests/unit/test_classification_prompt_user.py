@@ -7,8 +7,8 @@ Mechanizm placeholderów: `test_prompt_template.py`.
 
 import pytest
 
-from app.classification.labels import ClassificationOption, LabeledEntry, OptionLabeler
 from app.classification.prompt_user import ClassificationUserPrompt
+from app.classification.service_labels import ClassificationOption, LabeledEntry, OptionLabeler
 from app.prompt import PROMPT_DIR
 
 _OPTIONS = [

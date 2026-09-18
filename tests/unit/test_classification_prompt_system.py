@@ -2,15 +2,15 @@
 
 Na realnym pliku `app/prompt/classification_system.md`. Etykieta `OPT-00` i nazwy pól JSON są
 w tekście wpisane dosłownie (czytelność tego, co widzi model) — te testy pilnują ich zgodności
-z `labels.py` i `schema.py`. Mechanizm: `test_prompt_template.py`.
+z `service_labels.py` i `service_schema.py`. Mechanizm: `test_prompt_template.py`.
 """
 
 import json
 import re
 
-from app.classification.labels import NO_MATCH_LABEL
 from app.classification.prompt_system import ClassificationSystemPrompt
-from app.classification.schema import LABEL_FIELD, RATIONALE_FIELD
+from app.classification.service_labels import NO_MATCH_LABEL
+from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD
 
 # Wzorzec etykiet, które nadaje `OptionLabeler` (`OPT-1`…`OPT-n`, `OPT-00`).
 _LABELER_LABEL = re.compile(r"OPT-\d+")

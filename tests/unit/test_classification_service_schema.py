@@ -4,8 +4,8 @@ Etykiety z realnego `OptionLabeler`, więc test pilnuje też, że `enum` przejmu
 pozycji (z `OPT-00` na końcu), zamiast składać własną.
 """
 
-from app.classification.labels import ClassificationOption, OptionLabeler
-from app.classification.schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
+from app.classification.service_labels import ClassificationOption, OptionLabeler
+from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
 
 _OPTIONS = [
     ClassificationOption(id=21, name="Skargi", description="Skargi konsumentów."),

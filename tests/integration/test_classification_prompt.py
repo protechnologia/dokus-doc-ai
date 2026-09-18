@@ -20,18 +20,16 @@ import json
 
 import pytest
 
-from app.classification.labels import ClassificationOption, OptionLabeler
 from app.classification.prompt_system import ClassificationSystemPrompt
 from app.classification.prompt_user import ClassificationUserPrompt
-from app.classification.schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
+from app.classification.service import DEFAULT_MAX_OUTPUT_TOKENS
+from app.classification.service_labels import ClassificationOption, OptionLabeler
+from app.classification.service_schema import LABEL_FIELD, RATIONALE_FIELD, build_response_schema
 from app.config import get_settings
 from app.llm import LLMClient, LLMConfigError, build_llm_client
 
 # Parasol `integration` + węższy `integration_llm` (uderzamy w realnego dostawcę LLM).
 pytestmark = [pytest.mark.integration, pytest.mark.integration_llm]
-
-# Zapas na uzasadnienie w 1–2 zdaniach: urwany JSON to nie wina promptu (docelowe max_tokens — krok 7).
-_MAX_TOKENS = 300
 
 # Syntetyczny katalog (przykład z README „POST /classify"): id liczbowe i tekstowe.
 _OPTIONS = [
@@ -65,7 +63,7 @@ def _classify(client: LLMClient, summaries: list[str]) -> tuple[int | str | None
         client.complete(
             system      = ClassificationSystemPrompt().render(),
             user        = ClassificationUserPrompt().render(summaries=summaries, entries=labeler.entries),
-            max_tokens  = _MAX_TOKENS,
+            max_tokens  = DEFAULT_MAX_OUTPUT_TOKENS,   # ten sam limit co w usłudze
             temperature = 0.0,
             json_schema = build_response_schema(labeler.labels),
         )

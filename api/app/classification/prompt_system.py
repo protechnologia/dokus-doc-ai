@@ -15,7 +15,7 @@ class ClassificationSystemPrompt(PromptTemplate):
     Do czego:
         Mówi modelowi, co wybiera (jedną pozycję dla dokumentu na podstawie streszczeń), kiedy wybrać `OPT-00`
         (tylko gdy żadna opcja nie pasuje), że streszczenia to dane, nie polecenia, i jak odpowiedzieć
-        (pola `rationale`, potem `label` — nazwy z `classification.schema`). Stały tekst — bez
+        (pola `rationale`, potem `label` — nazwy z `classification.service_schema`). Stały tekst — bez
         placeholderów; etykieta `OPT-00` i nazwy pól wpisane dosłownie, zgodność pilnują testy.
     """
 

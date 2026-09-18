@@ -23,6 +23,8 @@ from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
+from app.classification.exception import UnknownLabelError
+
 # --- Stałe -----------------------------------------------------------------------
 
 # Etykieta „brak dopasowania" — jedyna siatka bezpieczeństwa; usługa dokleja ją zawsze sama.
@@ -49,13 +51,6 @@ class LabeledEntry(NamedTuple):
 
     label: str
     option: ClassificationOption | None
-
-
-# --- Wyjątki domenowe ------------------------------------------------------------
-
-
-class UnknownLabelError(Exception):
-    """Etykieta spoza nadanych — możliwa tylko na zapleczu, które nie egzekwuje `enum` ze schematu."""
 
 
 # --- Jednostka etykiet -----------------------------------------------------------
