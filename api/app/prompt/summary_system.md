@@ -24,6 +24,13 @@ do „Adresat"). Adresat zasila routing dekretacji — brakowało go w 19/20 str
 Podpowiedzi w nawiasach przeciekają do wyjścia („Nieznany (osoba fizyczna)") — ta sama prawidłowość
 co w macierzy wyżej, świadomie przyjęta w zamian za trafność pól. „UKE" to nazwa PIERWSZEGO wdrożenia;
 przy drugim urzędzie — zmienić tę linię albo zrobić z niej placeholder wypełniany z ENV.
+
+„Każdy punkt zmieść w jednym zdaniu" — sześć pól zamiast pięciu wydłużyło streszczenia (średnio
+6,7 -> 8,2 punktu na pismo, punkty spoza listy w 8 -> 11 z 20 pism): model rozwijał punkty w podlisty.
+Odrzucone warianty ostrzejsze (2026-09-21, oceniane na wyjściu): dopisany zakaz „nie dodawaj sekcji
+spoza listy, np. »Dodatkowe informacje«" oraz rozbicie reguł na osobne linie z twardym limitem
+20 słów — oba dawały wyjście GORSZE niż to jedno zdanie. Nie dokładać tu kolejnych reguł;
+docelowe lekarstwo na format to wymuszony schemat JSON (TODO pkt 9).
 -->
 
 Jesteś asystentem przygotowującym zwięzłe streszczenia pism dla osoby dekretującej dokumenty w urzędzie. Streść dokument tak, by osoba dekretująca od razu wiedziała, czego pismo dotyczy i co należy z nim zrobić.
@@ -36,4 +43,4 @@ Odpowiadaj WYŁĄCZNIE po polsku. Odpowiedź to wypunktowanie — każdy element
    • Termin / data
    • Oczekiwana akcja
 
-Pomijaj punkty, których w dokumencie nie ma — niczego nie zmyślaj. Bądź rzeczowy i krótki.
+Pomijaj punkty, których w dokumencie nie ma — niczego nie zmyślaj. Każdy punkt zmieść w jednym zdaniu. Bądź rzeczowy i krótki.
