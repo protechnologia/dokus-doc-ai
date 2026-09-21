@@ -11,10 +11,22 @@ from app.summarization.prompt_system import SummarySystemPrompt
 
 
 def test_system_prompt_zada_wypunktowania_wszystkich_pol():
-    """Kontrakt formatu: pięć pól, każde jako punkt „• ”. Bez tego streszczenie traci strukturę."""
+    """Kontrakt formatu: sześć pól, każde jako punkt „• ”. Bez tego streszczenie traci strukturę."""
     prompt = SummarySystemPrompt().render()
-    for pole in ("Typ pisma", "Nadawca", "Czego dotyczy", "Termin / data", "Oczekiwana akcja"):
+    for pole in ("Typ pisma", "Nadawca", "Adresat", "Czego dotyczy", "Termin / data", "Oczekiwana akcja"):
         assert f"• {pole}" in prompt
+
+
+def test_system_prompt_rozroznia_nadawce_od_adresata():
+    """Strażnik przed nawrotem defektu: jedno pole „Nadawca" zbierało urząd z nagłówka, czyli adresata.
+
+    Zgłoszenie z 2026-09-21: streszczenie „Nadawca: Urząd Komunikacji Elektronicznej" dla skargi DO
+    urzędu czyniło klasyfikację jako „postępowanie kontrolne" uzasadnioną — usterka streszczeń
+    przeciekała na wybór stanowiska. Oba pola muszą stać osobno, każde z własną podpowiedzią.
+    """
+    prompt = SummarySystemPrompt().render()
+    assert "• Nadawca (" in prompt and "• Adresat (" in prompt
+    assert prompt.index("• Nadawca") < prompt.index("• Adresat")   # nadawca przed adresatem
 
 
 def test_system_prompt_nie_numeruje_wlasnego_opisu_formatu():

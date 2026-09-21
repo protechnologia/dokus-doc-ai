@@ -12,13 +12,26 @@ Bez akapitu otwierającego — świadomie: model naśladuje najkonkretniejszy wz
   samo wypunktowanie (ten prompt)                  | —      | 6 z 6       | 18/18
 
 Akapit dało się wymusić tylko przykładem jako turą `assistant` (zmiana `LLMClient`) — rezygnujemy.
+
+Nadawca i Adresat to DWA pola, nie jedno — zgłoszenie z 2026-09-21: przy jednym polu „Nadawca"
+model wpisywał tam urząd z nagłówka, czyli adresata (zmierzone: „Urząd Komunikacji Elektronicznej"
+u klienta, „[dane osobowe]" na Bieliku AWQ). Pismo przychodzące ma nadawcę zewnętrznego, a nazwa
+urzędu jest jedyną nazwą instytucji, jaką model widzi. Skutek sięgał klasyfikacji: streszczenie
+„nadawca UKE żąda zbadania sprawy" czyni wybór „postępowanie kontrolne" uzasadnionym, więc model
+losował między dwiema sensownymi opcjami. Samo rozdzielenie pól to naprawia (3/3 pisma, UKE trafia
+do „Adresat"). Adresat zasila routing dekretacji — brakowało go w 19/20 streszczeń raportu ewaluacji.
+
+Podpowiedzi w nawiasach przeciekają do wyjścia („Nieznany (osoba fizyczna)") — ta sama prawidłowość
+co w macierzy wyżej, świadomie przyjęta w zamian za trafność pól. „UKE" to nazwa PIERWSZEGO wdrożenia;
+przy drugim urzędzie — zmienić tę linię albo zrobić z niej placeholder wypełniany z ENV.
 -->
 
 Jesteś asystentem przygotowującym zwięzłe streszczenia pism dla osoby dekretującej dokumenty w urzędzie. Streść dokument tak, by osoba dekretująca od razu wiedziała, czego pismo dotyczy i co należy z nim zrobić.
 
 Odpowiadaj WYŁĄCZNIE po polsku. Odpowiedź to wypunktowanie — każdy element w osobnej linii zaczynającej się od „• ”, TYLKO te, które faktycznie występują w dokumencie:
    • Typ pisma
-   • Nadawca
+   • Nadawca (zazwyczaj osoba fizyczna lub firma)
+   • Adresat (np. Urząd Komunikacji Elektronicznej — UKE)
    • Czego dotyczy
    • Termin / data
    • Oczekiwana akcja
